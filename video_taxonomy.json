@@ -1,0 +1,77 @@
+{
+  "platforms": {
+    "nintendo_3ds": {
+      "keywords": ["3ds", "new 3ds", "2ds", "2ds xl", "3ds xl"]
+    },
+    "nintendo_wii": {
+      "keywords": ["wii", "wiimote"]
+    },
+    "nintendo_wiiu": {
+      "keywords": ["wii u", "wiiu"]
+    },
+    "nintendo_switch": {
+      "keywords": ["switch", "switch lite", "switch oled", "joy con", "joy-con"]
+    },
+    "playstation_psp": {
+      "keywords": ["psp", "psp 1000", "psp 2000", "psp 3000", "playstation portable"]
+    },
+    "playstation_ps_vita": {
+      "keywords": ["ps vita", "psvita", "vita tv", "playstation vita"]
+    },
+    "playstation_ps3": {
+      "keywords": ["ps3", "playstation 3", "multiman", "webman"]
+    },
+    "playstation_ps2": {
+      "keywords": ["ps2", "playstation 2"]
+    }
+  },
+  "formats": {
+    "tutorial_guide": {
+      "keywords": ["anleitung", "guide", "tutorial", "erklärvideo", "schritt", "so geht", "öffne", "installieren", "zeige ich dir"]
+    },
+    "technical_modding": {
+      "keywords": ["modden", "mod", "firmware", "usb", "festplatte", "programme installieren", "retroarch", "retro ark", "flashen"]
+    },
+    "short_story": {
+      "keywords": ["geschichte", "heute", "damals", "früher", "letztens", "eines tages"]
+    },
+    "order_packaging": {
+      "keywords": ["bestellung", "verpacken", "eingewickelt", "ankommt", "dankeschönkarten", "extras", "verschickt", "verpackt", "ladegerät"]
+    },
+    "comparison": {
+      "keywords": ["besser", "vergleich", "vs", "unterschied", "welche", "welches modell"]
+    },
+    "opinion_hot_take": {
+      "keywords": ["besser als", "zur weißglut", "krass", "unglaublich", "gewöhnlich", "teuer", "nie wollte"]
+    },
+    "product_highlight": {
+      "keywords": ["schick", "selten", "perfekte wahl", "sehr hübsch", "nicht gewöhnlich", "kostenlos mit dabei"]
+    },
+    "buying_advice": {
+      "keywords": ["lohnen", "kaufen", "teuer", "wert", "welches modell", "perfekte wahl", "welche", "welches"]
+    },
+    "retro_nostalgia": {
+      "keywords": ["nostalgisch", "erinnerungen", "klassiker", "früher", "retro"]
+    }
+  },
+  "hooks": {
+    "question_hook": {
+      "keywords": ["warum", "welche", "welches", "kannst du", "hast du", "hört", "?"]
+    },
+    "controversy_hook": {
+      "keywords": ["besser als", "zur weißglut", "nie wollte", "nicht gewöhnlich", "teuer"]
+    },
+    "direct_address": {
+      "keywords": ["du", "dein", "deine", "dir", "dich"]
+    },
+    "customer_story": {
+      "keywords": ["bestellung", "danke", "viel spaß", "kunde", "heute drei konsolen", "bestellung filmen"]
+    },
+    "problem_solution": {
+      "keywords": ["trick", "so geht", "öffne", "installieren", "kannst du", "damit"]
+    },
+    "surprise_bonus": {
+      "keywords": ["kostenlos mit dabei", "zusätzlich", "extra", "noch dazu"]
+    }
+  }
+}

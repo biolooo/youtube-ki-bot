@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.git
+.gitignore
+venv/
+__pycache__/
+*.pyc
+audio_cache/
+generated_scripts/
+transcripts/
+shorts_with_transcripts.csv
+top_shorts.csv
+analysis_summary.json
+top_video_references_summary.json

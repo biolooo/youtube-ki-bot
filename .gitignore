@@ -1,0 +1,14 @@
+.DS_Store
+.env
+venv/
+__pycache__/
+*.pyc
+
+audio_cache/
+transcripts/
+generated_scripts/
+
+shorts_with_transcripts.csv
+top_shorts.csv
+analysis_summary.json
+top_video_references_summary.json

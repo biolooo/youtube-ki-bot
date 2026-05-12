@@ -1,0 +1,8 @@
+google-api-python-client
+python-dotenv
+youtube-transcript-api
+yt-dlp
+openai-whisper
+openai
+fastapi
+uvicorn
