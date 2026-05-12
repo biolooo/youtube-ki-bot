@@ -58,11 +58,14 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health():
+        openai_key = config.openai_api_key or ""
         return {
             "status": "ok",
             "reference_library_exists": paths.reference_library_path.exists(),
             "embedding_index_exists": paths.embedding_index_path.exists(),
-            "openai_configured": bool(config.openai_api_key),
+            "openai_configured": bool(openai_key),
+            "openai_key_length": len(openai_key),
+            "openai_key_prefix": openai_key[:7] if openai_key else "",
         }
 
     @app.get("/config/options")
