@@ -5,6 +5,7 @@ from typing import Optional
 @dataclass(frozen=True)
 class GenerationRequest:
     topic: str
+    database_id: Optional[str] = None
     platform: Optional[str] = None
     format_label: Optional[str] = None
     hook_label: Optional[str] = None
@@ -36,6 +37,7 @@ class GenerationRequest:
 @dataclass(frozen=True)
 class RetrievalRequest:
     query_text: str = ""
+    database_id: Optional[str] = None
     platform: Optional[str] = None
     format_label: Optional[str] = None
     hook_label: Optional[str] = None
@@ -45,6 +47,7 @@ class RetrievalRequest:
     def from_generation_request(cls, request: GenerationRequest) -> "RetrievalRequest":
         return cls(
             query_text=request.to_prompt_brief(),
+            database_id=request.database_id,
             platform=request.platform,
             format_label=request.format_label,
             hook_label=request.hook_label,

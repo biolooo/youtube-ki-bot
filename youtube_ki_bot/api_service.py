@@ -25,11 +25,19 @@ class ApiService:
         self.database_client = DatabaseClient(config.database_url)
         self.database_repository = DatabaseReferenceRepository(self.database_client)
         self.generation_repository = DatabaseGenerationRepository(self.database_client)
+        if self.database_repository.is_configured():
+            self.database_repository.ensure_multi_database_support()
 
     def _should_use_database(self) -> bool:
         return self.database_repository.is_configured()
 
-    def _load_reference_library(self) -> list:
+    def _load_reference_library(self, database_id: Optional[str] = None) -> list:
+        self._validate_database_id(database_id)
+        if database_id:
+            if self._should_use_database():
+                return self.database_repository.load_references(database_id=database_id)
+            return []
+
         if self._references is not None:
             return self._references
 
@@ -51,7 +59,12 @@ class ApiService:
         self._references = repository.build_reference_library()
         return self._references
 
-    def _load_embedding_index(self):
+    def _load_embedding_index(self, database_id: Optional[str] = None):
+        self._validate_database_id(database_id)
+        if database_id:
+            if self._should_use_database():
+                return self.database_repository.load_embedding_index(database_id=database_id)
+            return None
         if self._embedding_index is not None:
             return self._embedding_index
         if self._should_use_database():
@@ -112,7 +125,7 @@ class ApiService:
         )
 
     def retrieve_references(self, request: RetrievalRequest) -> list:
-        references = self._load_reference_library()
+        references = self._load_reference_library(request.database_id)
         retrieval_service = self._build_retrieval_service()
         return retrieval_service.retrieve(
             references=references,
@@ -121,11 +134,12 @@ class ApiService:
             format_label=request.format_label,
             hook_label=request.hook_label,
             top_k=request.top_k,
-            embedding_index=self._load_embedding_index(),
+            embedding_index=self._load_embedding_index(request.database_id),
         )
 
     def list_references(
         self,
+        database_id: Optional[str] = None,
         platform: Optional[str] = None,
         format_label: Optional[str] = None,
         hook_label: Optional[str] = None,
@@ -133,7 +147,7 @@ class ApiService:
         limit: int = 200,
         offset: int = 0,
     ) -> dict:
-        references = self._load_reference_library()
+        references = self._load_reference_library(database_id)
         filtered = []
         normalized_query = normalize_for_matching(q) if q else ""
 
@@ -162,12 +176,37 @@ class ApiService:
             "total": len(filtered),
         }
 
-    def get_reference(self, reference_id: str) -> Optional[dict]:
-        references = self._load_reference_library()
+    def get_reference(self, reference_id: str, database_id: Optional[str] = None) -> Optional[dict]:
+        references = self._load_reference_library(database_id)
         for reference in references:
             if str(reference.get("video_id")) == str(reference_id):
                 return self._serialize_reference(reference)
         return None
+
+    def list_databases(self) -> list[dict]:
+        self._require_database()
+        return self.database_repository.list_databases()
+
+    def get_database(self, database_id: str) -> Optional[dict]:
+        self._require_database()
+        return self.database_repository.get_database(database_id)
+
+    def create_database(self, database_id: str, name: str, description: Optional[str] = None) -> dict:
+        self._require_database()
+        return self.database_repository.create_database(database_id, name, description)
+
+    def delete_database(self, database_id: str) -> bool:
+        self._require_database()
+        return self.database_repository.delete_database(database_id)
+
+    def _require_database(self) -> None:
+        if not self.database_repository.is_configured():
+            raise ValueError("DATABASE_URL fehlt. Multi-Datenbank-Endpunkte sind nicht verfügbar.")
+
+    def _validate_database_id(self, database_id: Optional[str]) -> None:
+        if database_id and self._should_use_database():
+            if not self.database_repository.database_exists(database_id):
+                raise LookupError("Database not found")
 
     @staticmethod
     def _reference_matches_query(reference: dict, normalized_query: str) -> bool:

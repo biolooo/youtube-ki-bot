@@ -72,9 +72,28 @@ create table if not exists reference_embeddings (
     updated_at timestamptz not null default now()
 );
 
+create table if not exists reference_databases (
+    id text primary key,
+    name text not null,
+    description text,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+create table if not exists database_references (
+    database_id text not null references reference_databases(id) on delete cascade,
+    video_id text not null references videos(video_id) on delete cascade,
+    created_at timestamptz not null default now(),
+    primary key (database_id, video_id)
+);
+
+create index if not exists idx_database_references_video_id
+    on database_references(video_id);
+
 create table if not exists generation_requests (
     id uuid primary key default gen_random_uuid(),
     topic text not null,
+    database_id text,
     platform text,
     format_label text,
     hook_label text,

@@ -53,6 +53,7 @@ class DatabaseGenerationRepository:
         sql = """
         insert into generation_requests (
             topic,
+            database_id,
             platform,
             format_label,
             hook_label,
@@ -66,6 +67,7 @@ class DatabaseGenerationRepository:
             request_payload
         ) values (
             %(topic)s,
+            %(database_id)s,
             %(platform)s,
             %(format_label)s,
             %(hook_label)s,
@@ -84,6 +86,7 @@ class DatabaseGenerationRepository:
             sql,
             {
                 "topic": request.topic,
+                "database_id": request.database_id,
                 "platform": request.platform,
                 "format_label": request.format_label,
                 "hook_label": request.hook_label,

@@ -32,6 +32,8 @@ class ChannelSyncService:
         self.database_client = DatabaseClient(config.database_url)
         self.reference_repository = DatabaseReferenceRepository(self.database_client)
         self.sync_repository = DatabaseSyncRepository(self.database_client)
+        if self.reference_repository.is_configured():
+            self.reference_repository.ensure_multi_database_support()
         self.embedding_service = EmbeddingService(
             api_key=config.openai_api_key,
             model=config.embedding_model,
@@ -95,6 +97,10 @@ class ChannelSyncService:
             short["is_top_reference"] = bool(memberships)
 
         analysis_updates = self.sync_repository.upsert_analysis(merged_analyzed_shorts)
+        self.reference_repository.add_references_to_database(
+            "default",
+            [short["video_id"] for short in merged_analyzed_shorts],
+        )
         membership_updates = self.sync_repository.replace_reference_memberships(top_reference_rows)
         embedding_updates = self._sync_embeddings(new_analyzed_shorts, merged_analyzed_shorts)
 

@@ -4,6 +4,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from youtube_ki_bot.api_service import ApiService
@@ -13,6 +14,7 @@ from youtube_ki_bot.settings import load_app_config
 
 class RetrievalRequestBody(BaseModel):
     query_text: str = ""
+    database_id: Optional[str] = None
     platform: Optional[str] = None
     format_label: Optional[str] = None
     hook_label: Optional[str] = None
@@ -21,6 +23,7 @@ class RetrievalRequestBody(BaseModel):
 
 class GenerationRequestBody(BaseModel):
     topic: str
+    database_id: Optional[str] = None
     platform: Optional[str] = None
     format_label: Optional[str] = None
     hook_label: Optional[str] = None
@@ -32,10 +35,20 @@ class GenerationRequestBody(BaseModel):
     top_k: int = Field(default=5, ge=1, le=20)
 
 
+class DatabaseCreateBody(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+
+
 def _allowed_origins() -> list:
     raw = os.getenv("API_ALLOWED_ORIGINS", "*")
     origins = [item.strip() for item in raw.split(",") if item.strip()]
     return origins or ["*"]
+
+
+def _error_response(message: str, status_code: int) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"error": message})
 
 
 def create_app() -> FastAPI:
@@ -69,6 +82,64 @@ def create_app() -> FastAPI:
     @app.get("/config/options")
     def options():
         return api_service.get_options()
+
+    @app.get("/databases")
+    def list_databases():
+        try:
+            databases = api_service.list_databases()
+            return {"databases": databases}
+        except ValueError as exc:
+            return _error_response(str(exc), 400)
+        except Exception as exc:
+            return _error_response(str(exc), 500)
+
+    @app.get("/databases/{database_id}")
+    def get_database(database_id: str):
+        try:
+            database = api_service.get_database(database_id)
+            if database is None:
+                return _error_response("Database not found", 404)
+            return database
+        except ValueError as exc:
+            return _error_response(str(exc), 400)
+        except Exception as exc:
+            return _error_response(str(exc), 500)
+
+    @app.get("/databases/{database_id}/references")
+    def list_database_references(database_id: str):
+        try:
+            if api_service.get_database(database_id) is None:
+                return _error_response("Database not found", 404)
+            result = api_service.list_references(database_id=database_id, limit=1000, offset=0)
+            return result
+        except LookupError as exc:
+            return _error_response(str(exc), 404)
+        except ValueError as exc:
+            return _error_response(str(exc), 400)
+        except Exception as exc:
+            return _error_response(str(exc), 500)
+
+    @app.post("/databases")
+    def create_database(body: DatabaseCreateBody):
+        try:
+            database = api_service.create_database(
+                database_id=body.id,
+                name=body.name,
+                description=body.description,
+            )
+            return database
+        except Exception as exc:
+            return _error_response(str(exc), 500)
+
+    @app.delete("/databases/{database_id}")
+    def delete_database(database_id: str):
+        try:
+            deleted = api_service.delete_database(database_id)
+            if not deleted:
+                return _error_response("Database not found", 404)
+            return {"deleted": True, "id": database_id}
+        except Exception as exc:
+            return _error_response(str(exc), 500)
 
     @app.get("/references")
     def list_references(
@@ -111,6 +182,7 @@ def create_app() -> FastAPI:
         try:
             request = RetrievalRequest(
                 query_text=body.query_text,
+                database_id=body.database_id,
                 platform=body.platform,
                 format_label=body.format_label,
                 hook_label=body.hook_label,
@@ -121,6 +193,8 @@ def create_app() -> FastAPI:
                 "count": len(results),
                 "results": results,
             }
+        except LookupError as exc:
+            return _error_response(str(exc), 404)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -129,6 +203,7 @@ def create_app() -> FastAPI:
         try:
             request = GenerationRequest(
                 topic=body.topic,
+                database_id=body.database_id,
                 platform=body.platform,
                 format_label=body.format_label,
                 hook_label=body.hook_label,
@@ -146,6 +221,8 @@ def create_app() -> FastAPI:
                 "references_used": retrieval_results,
                 "saved_to": str(output_path.resolve()) if output_path else None,
             }
+        except LookupError as exc:
+            return _error_response(str(exc), 404)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
