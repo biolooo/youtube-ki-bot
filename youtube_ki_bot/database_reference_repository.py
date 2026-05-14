@@ -133,6 +133,56 @@ class DatabaseReferenceRepository:
             for row in rows
         ]
 
+    def table_exists(self, schema: str, name: str) -> bool:
+        with self.database_client.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    select 1
+                    from information_schema.tables
+                    where table_schema = %s
+                      and table_name = %s
+                      and table_type = 'BASE TABLE'
+                    """,
+                    (schema, name),
+                )
+                row = cursor.fetchone()
+        return bool(row)
+
+    def get_table_rows(self, schema: str, name: str, limit: int, offset: int) -> dict:
+        self._assert_table_allowed(schema, name)
+        columns = self._load_table_columns(schema, name)
+        from psycopg import sql
+        from psycopg.rows import dict_row
+
+        with self.database_client.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    sql.SQL("select count(*) from {}.{}").format(
+                        sql.Identifier(schema),
+                        sql.Identifier(name),
+                    )
+                )
+                total = int(cursor.fetchone()[0] or 0)
+
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(
+                    sql.SQL("select * from {}.{} limit %s offset %s").format(
+                        sql.Identifier(schema),
+                        sql.Identifier(name),
+                    ),
+                    (limit, offset),
+                )
+                rows = cursor.fetchall()
+
+        return {
+            "schema": schema,
+            "name": name,
+            "columns": columns,
+            "rows": [self._serialize_table_row(columns, row) for row in rows],
+            "total": total,
+        }
+
     def get_database(self, database_id: str) -> Optional[dict]:
         sql = """
         select
@@ -370,6 +420,33 @@ class DatabaseReferenceRepository:
                 }
             )
         return memberships_by_video
+
+    def _assert_table_allowed(self, schema: str, name: str) -> None:
+        if schema != "public" or not self.table_exists(schema, name):
+            raise LookupError("Table not found")
+
+    def _load_table_columns(self, schema: str, name: str) -> list[str]:
+        with self.database_client.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    select column_name
+                    from information_schema.columns
+                    where table_schema = %s
+                      and table_name = %s
+                    order by ordinal_position asc
+                    """,
+                    (schema, name),
+                )
+                rows = cursor.fetchall()
+        return [row[0] for row in rows]
+
+    @staticmethod
+    def _serialize_table_row(columns: list[str], row: dict) -> dict:
+        return {
+            column: _to_iso(row.get(column)) if hasattr(row.get(column), "isoformat") else row.get(column)
+            for column in columns
+        }
 
     @staticmethod
     def _serialize_database_row(row: dict) -> dict:

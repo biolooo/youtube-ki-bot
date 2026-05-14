@@ -99,6 +99,22 @@ def create_app() -> FastAPI:
         except Exception as exc:
             return _error_response(str(exc), 500)
 
+    @app.get("/tables/{schema}/{name}/rows")
+    def get_table_rows(
+        schema: str,
+        name: str,
+        limit: int = Query(default=100, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ):
+        try:
+            return api_service.get_table_rows(schema=schema, name=name, limit=limit, offset=offset)
+        except LookupError as exc:
+            return _error_response(str(exc), 404)
+        except ValueError as exc:
+            return _error_response(str(exc), 400)
+        except Exception as exc:
+            return _error_response(str(exc), 500)
+
     @app.get("/databases/{database_id}")
     def get_database(database_id: str):
         try:
