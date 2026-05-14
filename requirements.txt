@@ -6,3 +6,4 @@ openai-whisper
 openai
 fastapi
 uvicorn
+psycopg[binary]

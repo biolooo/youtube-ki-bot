@@ -6,6 +6,8 @@ from datetime import datetime
 
 from youtube_ki_bot.embedding_service import EmbeddingService
 from youtube_ki_bot.generation_service import ScriptGenerationService
+from youtube_ki_bot.database import DatabaseClient
+from youtube_ki_bot.database_importer import DatabaseImporter
 from youtube_ki_bot.reference_repository import ReferenceRepository
 from youtube_ki_bot.retrieval_service import RetrievalService
 from youtube_ki_bot.settings import load_app_config
@@ -89,6 +91,21 @@ def build_embedding_index(config, paths):
     CsvJsonStorage().save_json(embedding_index, paths.embedding_index_path)
     print(f"Embedding-Index gespeichert unter: {paths.embedding_index_path.resolve()}")
     print(f"Embedding-Items insgesamt: {len(embedding_index.get('items', []))}")
+
+
+def database_health(config):
+    database_client = DatabaseClient(config.database_url)
+    if not database_client.is_configured():
+        raise ValueError("DATABASE_URL fehlt.")
+    is_reachable = database_client.ping()
+    print(f"Datenbank erreichbar: {is_reachable}")
+
+
+def import_database(config, paths):
+    database_client = DatabaseClient(config.database_url)
+    importer = DatabaseImporter(database_client, paths)
+    result = importer.import_all()
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def retrieve_references(config, paths, args):
@@ -175,6 +192,8 @@ def build_parser():
     subparsers.add_parser("pipeline", help="Vollständige Analyse-Pipeline ausführen")
     subparsers.add_parser("build-library", help="Referenzbibliothek aus Analyse-Dateien bauen")
     subparsers.add_parser("build-embeddings", help="OpenAI Embeddings für Referenzbibliothek bauen")
+    subparsers.add_parser("db-health", help="Datenbank-Verbindung prüfen")
+    subparsers.add_parser("db-import", help="Bestehende Daten nach Postgres/Supabase importieren")
 
     retrieve_parser = subparsers.add_parser("retrieve", help="Beste Referenzvideos abrufen")
     retrieve_parser.add_argument("--query", default="", help="Freitext-Idee oder Suchquery")
@@ -210,6 +229,12 @@ def main():
         return
     if command == "build-embeddings":
         build_embedding_index(config, paths)
+        return
+    if command == "db-health":
+        database_health(config)
+        return
+    if command == "db-import":
+        import_database(config, paths)
         return
     if command == "retrieve":
         retrieve_references(config, paths, args)

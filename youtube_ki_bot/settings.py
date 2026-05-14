@@ -59,6 +59,7 @@ class AppConfig:
     transcriptlol_poll_seconds: int
     transcriptlol_timeout_seconds: int
     transcriptlol_max_workers: int
+    database_url: Optional[str]
 
 
 def ensure_directory(path: Path) -> None:
@@ -170,6 +171,7 @@ def load_app_config(base_dir: Path, require_youtube: bool = True) -> tuple[AppCo
             "TRANSCRIPTLOL_MAX_WORKERS",
             DEFAULT_TRANSCRIPTLOL_MAX_WORKERS,
         ),
+        database_url=os.getenv("DATABASE_URL"),
     )
     return config, build_pipeline_paths(base_dir)
 
