@@ -60,6 +60,7 @@ class AppConfig:
     transcriptlol_timeout_seconds: int
     transcriptlol_max_workers: int
     database_url: Optional[str]
+    persist_generated_scripts: bool
 
 
 def ensure_directory(path: Path) -> None:
@@ -172,6 +173,7 @@ def load_app_config(base_dir: Path, require_youtube: bool = True) -> tuple[AppCo
             DEFAULT_TRANSCRIPTLOL_MAX_WORKERS,
         ),
         database_url=os.getenv("DATABASE_URL"),
+        persist_generated_scripts=get_env_bool("PERSIST_GENERATED_SCRIPTS", default=False),
     )
     return config, build_pipeline_paths(base_dir)
 

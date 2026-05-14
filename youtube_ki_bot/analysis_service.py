@@ -1,6 +1,7 @@
 import re
 from collections import Counter
 from math import ceil
+from typing import Optional
 
 from youtube_ki_bot.taxonomy_service import TaxonomyClassifier
 from youtube_ki_bot.text_utils import (
@@ -17,6 +18,63 @@ from youtube_ki_bot.text_utils import (
 class AnalysisService:
     def __init__(self, classifier: TaxonomyClassifier):
         self.classifier = classifier
+
+    def analyze_short(self, short: dict) -> Optional[dict]:
+        transcript_text = short.get("transcript_text", "").strip()
+        if not transcript_text:
+            return None
+        hook_text = extract_hook_text(short["title"], transcript_text)
+        classification = self.classifier.classify_video(short["title"], transcript_text, hook_text)
+        style_features = self.compute_style_features(short["title"], transcript_text, hook_text)
+        return {
+            "video_id": short["video_id"],
+            "title": short["title"],
+            "views": short["views"],
+            "likes": short["likes"],
+            "comments": short["comments"],
+            "duration_seconds": short["duration_seconds"],
+            "published_at": short["published_at"],
+            "url": short["url"],
+            "transcript_source": short["transcript_source"],
+            "transcript_status": short["transcript_status"],
+            "hook_text": hook_text,
+            "primary_platform_labels": classification["platform_labels"],
+            "mentioned_platform_labels": classification["mentioned_platform_labels"],
+            "secondary_platform_labels": classification["secondary_platform_labels"],
+            "format_labels": classification["format_labels"],
+            "hook_labels": classification["hook_labels"],
+            "platform_labels_text": ", ".join(classification["platform_labels"]),
+            "mentioned_platform_labels_text": ", ".join(classification["mentioned_platform_labels"]),
+            "secondary_platform_labels_text": ", ".join(classification["secondary_platform_labels"]),
+            "format_labels_text": ", ".join(classification["format_labels"]),
+            "hook_labels_text": ", ".join(classification["hook_labels"]),
+            "taxonomy_confidence_score": classification["confidence_score"],
+            **style_features,
+            "transcript_text": transcript_text,
+        }
+
+    @staticmethod
+    def normalize_existing_analysis_row(short: dict) -> dict:
+        normalized = dict(short)
+        if "primary_platform_labels" not in normalized:
+            normalized["primary_platform_labels"] = list(normalized.get("platform_labels", []))
+        if "mentioned_platform_labels" not in normalized:
+            normalized["mentioned_platform_labels"] = list(normalized.get("mentioned_platform_labels", []))
+        if "secondary_platform_labels" not in normalized:
+            normalized["secondary_platform_labels"] = list(normalized.get("secondary_platform_labels", []))
+        normalized["platform_labels_text"] = ", ".join(normalized.get("primary_platform_labels", []))
+        normalized["mentioned_platform_labels_text"] = ", ".join(
+            normalized.get("mentioned_platform_labels", [])
+        )
+        normalized["secondary_platform_labels_text"] = ", ".join(
+            normalized.get("secondary_platform_labels", [])
+        )
+        normalized["format_labels_text"] = ", ".join(normalized.get("format_labels", []))
+        normalized["hook_labels_text"] = ", ".join(normalized.get("hook_labels", []))
+        normalized.setdefault("transcript_source", "")
+        normalized.setdefault("transcript_status", "")
+        normalized.setdefault("transcript_text", "")
+        return normalized
 
     @staticmethod
     def compute_style_features(title: str, transcript_text: str, hook_text: str) -> dict:
@@ -104,48 +162,17 @@ class AnalysisService:
         hook_counter = Counter()
 
         for short in enriched_shorts:
-            transcript_text = short.get("transcript_text", "").strip()
-            if not transcript_text:
+            analyzed_short = self.analyze_short(short)
+            if not analyzed_short:
                 continue
-            hook_text = extract_hook_text(short["title"], transcript_text)
-            classification = self.classifier.classify_video(short["title"], transcript_text, hook_text)
-            style_features = self.compute_style_features(short["title"], transcript_text, hook_text)
-
-            for label in classification["platform_labels"]:
+            for label in analyzed_short["primary_platform_labels"]:
                 platform_counter[label] += 1
-            for label in classification["format_labels"]:
+            for label in analyzed_short["format_labels"]:
                 format_counter[label] += 1
-            for label in classification["hook_labels"]:
+            for label in analyzed_short["hook_labels"]:
                 hook_counter[label] += 1
-
-            analyzed_short = {
-                "video_id": short["video_id"],
-                "title": short["title"],
-                "views": short["views"],
-                "likes": short["likes"],
-                "comments": short["comments"],
-                "duration_seconds": short["duration_seconds"],
-                "published_at": short["published_at"],
-                "url": short["url"],
-                "transcript_source": short["transcript_source"],
-                "transcript_status": short["transcript_status"],
-                "hook_text": hook_text,
-                "primary_platform_labels": classification["platform_labels"],
-                "mentioned_platform_labels": classification["mentioned_platform_labels"],
-                "secondary_platform_labels": classification["secondary_platform_labels"],
-                "format_labels": classification["format_labels"],
-                "hook_labels": classification["hook_labels"],
-                "platform_labels_text": ", ".join(classification["platform_labels"]),
-                "mentioned_platform_labels_text": ", ".join(classification["mentioned_platform_labels"]),
-                "secondary_platform_labels_text": ", ".join(classification["secondary_platform_labels"]),
-                "format_labels_text": ", ".join(classification["format_labels"]),
-                "hook_labels_text": ", ".join(classification["hook_labels"]),
-                "taxonomy_confidence_score": classification["confidence_score"],
-                **style_features,
-                "transcript_text": transcript_text,
-            }
             analyzed_shorts.append(analyzed_short)
-            all_transcript_texts.append(transcript_text)
+            all_transcript_texts.append(analyzed_short["transcript_text"])
 
         analyzed_shorts.sort(key=lambda short: short["views"], reverse=True)
         top_reference_rows, memberships_by_video = self.select_top_reference_rows(analyzed_shorts, top_percent)

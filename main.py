@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 from datetime import datetime
 
+from youtube_ki_bot.api_service import ApiService
+from youtube_ki_bot.app_models import GenerationRequest, RetrievalRequest
 from youtube_ki_bot.embedding_service import EmbeddingService
 from youtube_ki_bot.generation_service import ScriptGenerationService
 from youtube_ki_bot.database import DatabaseClient
@@ -109,25 +111,15 @@ def import_database(config, paths):
 
 
 def retrieve_references(config, paths, args):
-    references = load_reference_library(paths)
-    embedding_index = None
-    if paths.embedding_index_path.exists():
-        embedding_index = json.loads(paths.embedding_index_path.read_text(encoding="utf-8"))
-
-    retrieval_service = RetrievalService(
-        EmbeddingService(
-            api_key=config.openai_api_key,
-            model=config.embedding_model,
+    api_service = ApiService(config, paths)
+    results = api_service.retrieve_references(
+        RetrievalRequest(
+            query_text=args.query or "",
+            platform=args.platform,
+            format_label=args.format_label,
+            hook_label=args.hook_label,
+            top_k=args.top_k,
         )
-    )
-    results = retrieval_service.retrieve(
-        references=references,
-        query_text=args.query or "",
-        platform=args.platform,
-        format_label=args.format_label,
-        hook_label=args.hook_label,
-        top_k=args.top_k,
-        embedding_index=embedding_index,
     )
     print(f"Gefundene Referenzen: {len(results)}")
     for index, item in enumerate(results, start=1):
@@ -147,42 +139,28 @@ def generate_script(config, paths, args):
     if not config.openai_api_key:
         raise ValueError("OPENAI_API_KEY fehlt. Script-Generierung ist noch nicht möglich.")
 
-    references = load_reference_library(paths)
-    embedding_index = None
-    if paths.embedding_index_path.exists():
-        embedding_index = json.loads(paths.embedding_index_path.read_text(encoding="utf-8"))
-
-    retrieval_service = RetrievalService(
-        EmbeddingService(
-            api_key=config.openai_api_key,
-            model=config.embedding_model,
+    api_service = ApiService(config, paths)
+    payload, results, output_path = api_service.generate_script(
+        GenerationRequest(
+            topic=args.brief,
+            platform=args.platform,
+            format_label=args.format_label,
+            hook_label=args.hook_label,
+            top_k=args.top_k,
         )
     )
-    results = retrieval_service.retrieve(
-        references=references,
-        query_text=args.brief,
-        platform=args.platform,
-        format_label=args.format_label,
-        hook_label=args.hook_label,
-        top_k=args.top_k,
-        embedding_index=embedding_index,
-    )
-
-    generator = ScriptGenerationService(
-        api_key=config.openai_api_key,
-        model=config.generation_model,
-    )
-    output = generator.generate_script(
-        brief=args.brief,
-        retrieval_results=results,
-        platform=args.platform,
-        format_label=args.format_label,
-        hook_label=args.hook_label,
-    )
-    payload = extract_json_payload(output)
-    output_path = save_generated_script(paths, args.brief, payload, results)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
-    print(f"\nScript gespeichert unter: {output_path.resolve()}")
+    if output_path:
+        print(f"\nScript gespeichert unter: {output_path.resolve()}")
+    else:
+        print("\nScript wurde nicht automatisch gespeichert.")
+
+
+def sync_channel(config, paths):
+    from youtube_ki_bot.channel_sync_service import ChannelSyncService
+
+    result = ChannelSyncService(config, paths).run()
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def build_parser():
@@ -194,6 +172,7 @@ def build_parser():
     subparsers.add_parser("build-embeddings", help="OpenAI Embeddings für Referenzbibliothek bauen")
     subparsers.add_parser("db-health", help="Datenbank-Verbindung prüfen")
     subparsers.add_parser("db-import", help="Bestehende Daten nach Postgres/Supabase importieren")
+    subparsers.add_parser("sync-channel", help="Kanal scannen, neue Videos verarbeiten und DB aktualisieren")
 
     retrieve_parser = subparsers.add_parser("retrieve", help="Beste Referenzvideos abrufen")
     retrieve_parser.add_argument("--query", default="", help="Freitext-Idee oder Suchquery")
@@ -235,6 +214,9 @@ def main():
         return
     if command == "db-import":
         import_database(config, paths)
+        return
+    if command == "sync-channel":
+        sync_channel(config, paths)
         return
     if command == "retrieve":
         retrieve_references(config, paths, args)

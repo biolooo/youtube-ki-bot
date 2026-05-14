@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -60,6 +60,7 @@ def create_app() -> FastAPI:
     def health():
         return {
             "status": "ok",
+            "database_configured": api_service.database_client.is_configured(),
             "reference_library_exists": paths.reference_library_path.exists(),
             "embedding_index_exists": paths.embedding_index_path.exists(),
             "openai_configured": bool(config.openai_api_key),
@@ -67,31 +68,43 @@ def create_app() -> FastAPI:
 
     @app.get("/config/options")
     def options():
-        return {
-            "platform_examples": [
-                "nintendo_3ds",
-                "nintendo_wii",
-                "nintendo_switch",
-                "playstation_psp",
-                "playstation_ps3",
-                "playstation_ps2",
-            ],
-            "format_examples": [
-                "tutorial_guide",
-                "technical_modding",
-                "order_packaging",
-                "buying_advice",
-                "retro_nostalgia",
-                "opinion_hot_take",
-            ],
-            "hook_examples": [
-                "question_hook",
-                "controversy_hook",
-                "problem_solution",
-                "direct_address",
-                "customer_story",
-            ],
-        }
+        return api_service.get_options()
+
+    @app.get("/references")
+    def list_references(
+        platform: Optional[str] = None,
+        format_label: Optional[str] = None,
+        hook_label: Optional[str] = None,
+        q: str = "",
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ):
+        try:
+            return api_service.list_references(
+                platform=platform,
+                format_label=format_label,
+                hook_label=hook_label,
+                q=q,
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/references/{reference_id}")
+    def get_reference(reference_id: str):
+        try:
+            reference = api_service.get_reference(reference_id)
+            if reference is None:
+                raise HTTPException(status_code=404, detail="Reference not found")
+            return reference
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # TODO: PATCH /references/{id}
+    # TODO: DELETE /references/{id}
 
     @app.post("/retrieve-references")
     def retrieve_references(body: RetrievalRequestBody):
@@ -131,7 +144,7 @@ def create_app() -> FastAPI:
                 "request": request.to_dict(),
                 "script_payload": payload,
                 "references_used": retrieval_results,
-                "saved_to": str(output_path.resolve()),
+                "saved_to": str(output_path.resolve()) if output_path else None,
             }
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

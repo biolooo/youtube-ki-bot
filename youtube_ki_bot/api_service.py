@@ -1,13 +1,18 @@
 import json
 from pathlib import Path
+from typing import Optional
 
 from youtube_ki_bot.app_models import GenerationRequest, RetrievalRequest
+from youtube_ki_bot.database import DatabaseClient
+from youtube_ki_bot.database_generation_repository import DatabaseGenerationRepository
+from youtube_ki_bot.database_reference_repository import DatabaseReferenceRepository
 from youtube_ki_bot.embedding_service import EmbeddingService
 from youtube_ki_bot.generation_service import ScriptGenerationService
 from youtube_ki_bot.reference_repository import ReferenceRepository
 from youtube_ki_bot.retrieval_service import RetrievalService
 from youtube_ki_bot.storage import CsvJsonStorage
 from youtube_ki_bot.settings import ensure_directory
+from youtube_ki_bot.text_utils import normalize_for_matching
 
 
 class ApiService:
@@ -16,10 +21,23 @@ class ApiService:
         self.paths = paths
         self._references = None
         self._embedding_index = None
+        self._options = None
+        self.database_client = DatabaseClient(config.database_url)
+        self.database_repository = DatabaseReferenceRepository(self.database_client)
+        self.generation_repository = DatabaseGenerationRepository(self.database_client)
+
+    def _should_use_database(self) -> bool:
+        return self.database_repository.is_configured()
 
     def _load_reference_library(self) -> list:
         if self._references is not None:
             return self._references
+
+        if self._should_use_database():
+            references = self.database_repository.load_references()
+            if references:
+                self._references = references
+                return self._references
 
         if self.paths.reference_library_path.exists():
             payload = json.loads(self.paths.reference_library_path.read_text(encoding="utf-8"))
@@ -36,12 +54,54 @@ class ApiService:
     def _load_embedding_index(self):
         if self._embedding_index is not None:
             return self._embedding_index
+        if self._should_use_database():
+            embedding_index = self.database_repository.load_embedding_index()
+            if embedding_index:
+                self._embedding_index = embedding_index
+                return self._embedding_index
         if not self.paths.embedding_index_path.exists():
             return None
         self._embedding_index = json.loads(
             self.paths.embedding_index_path.read_text(encoding="utf-8")
         )
         return self._embedding_index
+
+    def get_options(self) -> dict:
+        if self._options is not None:
+            return self._options
+
+        if self._should_use_database():
+            options = self.database_repository.load_option_values()
+            if all(options.values()):
+                self._options = options
+                return self._options
+
+        self._options = {
+            "platform_examples": [
+                "nintendo_3ds",
+                "nintendo_wii",
+                "nintendo_switch",
+                "playstation_psp",
+                "playstation_ps3",
+                "playstation_ps2",
+            ],
+            "format_examples": [
+                "tutorial_guide",
+                "technical_modding",
+                "order_packaging",
+                "buying_advice",
+                "retro_nostalgia",
+                "opinion_hot_take",
+            ],
+            "hook_examples": [
+                "question_hook",
+                "controversy_hook",
+                "problem_solution",
+                "direct_address",
+                "customer_story",
+            ],
+        }
+        return self._options
 
     def _build_retrieval_service(self) -> RetrievalService:
         return RetrievalService(
@@ -64,6 +124,83 @@ class ApiService:
             embedding_index=self._load_embedding_index(),
         )
 
+    def list_references(
+        self,
+        platform: Optional[str] = None,
+        format_label: Optional[str] = None,
+        hook_label: Optional[str] = None,
+        q: str = "",
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict:
+        references = self._load_reference_library()
+        filtered = []
+        normalized_query = normalize_for_matching(q) if q else ""
+
+        for reference in references:
+            if platform and platform not in reference.get("platform_labels", []):
+                continue
+            if format_label and format_label not in reference.get("format_labels", []):
+                continue
+            if hook_label and hook_label not in reference.get("hook_labels", []):
+                continue
+            if normalized_query and not self._reference_matches_query(reference, normalized_query):
+                continue
+            filtered.append(reference)
+
+        filtered.sort(
+            key=lambda item: (
+                item.get("views") or 0,
+                item.get("published_at") or "",
+            ),
+            reverse=True,
+        )
+
+        paginated = filtered[offset: offset + limit]
+        return {
+            "references": [self._serialize_reference(reference) for reference in paginated],
+            "total": len(filtered),
+        }
+
+    def get_reference(self, reference_id: str) -> Optional[dict]:
+        references = self._load_reference_library()
+        for reference in references:
+            if str(reference.get("video_id")) == str(reference_id):
+                return self._serialize_reference(reference)
+        return None
+
+    @staticmethod
+    def _reference_matches_query(reference: dict, normalized_query: str) -> bool:
+        haystack = normalize_for_matching(
+            " ".join(
+                [
+                    reference.get("title", ""),
+                    reference.get("hook_text", ""),
+                    reference.get("description", "") or "",
+                    reference.get("channel", "") or "",
+                ]
+            )
+        )
+        return normalized_query in haystack
+
+    @staticmethod
+    def _serialize_reference(reference: dict) -> dict:
+        return {
+            "id": reference.get("video_id"),
+            "title": reference.get("title", ""),
+            "channel": reference.get("channel"),
+            "youtube_url": reference.get("url"),
+            "views": reference.get("views"),
+            "duration_seconds": reference.get("duration_seconds"),
+            "published_at": reference.get("published_at") or None,
+            "platform_labels": list(reference.get("platform_labels", [])),
+            "format_labels": list(reference.get("format_labels", [])),
+            "hook_labels": list(reference.get("hook_labels", [])),
+            "hook_text": reference.get("hook_text") or None,
+            "description": reference.get("description"),
+            "transcript": reference.get("transcript_text") or None,
+        }
+
     def generate_script(self, request: GenerationRequest) -> tuple[dict, list, Path]:
         if not self.config.openai_api_key:
             raise ValueError("OPENAI_API_KEY fehlt. Script-Generierung ist nicht verfügbar.")
@@ -83,7 +220,16 @@ class ApiService:
             hook_label=request.hook_label,
         )
         payload = self._extract_json_payload(output)
-        output_path = self._save_generated_script(request, payload, retrieval_results)
+        output_path = None
+        if self.config.persist_generated_scripts:
+            output_path = self._save_generated_script(request, payload, retrieval_results)
+            self._persist_generated_script(
+                request=request,
+                retrieval_request=retrieval_request,
+                retrieval_results=retrieval_results,
+                payload=payload,
+                model=generator.model,
+            )
         return payload, retrieval_results, output_path
 
     @staticmethod
@@ -133,3 +279,21 @@ class ApiService:
         }
         CsvJsonStorage().save_json(output_payload, output_path)
         return output_path
+
+    def _persist_generated_script(
+        self,
+        request: GenerationRequest,
+        retrieval_request: RetrievalRequest,
+        retrieval_results: list,
+        payload: dict,
+        model: str,
+    ) -> None:
+        if not self.generation_repository.is_configured():
+            return
+        self.generation_repository.persist_generation(
+            request=request,
+            retrieval_request=retrieval_request.to_dict(),
+            retrieval_results=retrieval_results,
+            payload=payload,
+            model=model,
+        )

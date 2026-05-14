@@ -29,6 +29,20 @@ class DatabaseClient:
         finally:
             connection.close()
 
+    @contextmanager
+    def dict_cursor(self) -> Iterator:
+        try:
+            from psycopg.rows import dict_row
+        except ImportError as exc:
+            raise ImportError(
+                "Package 'psycopg' ist nicht installiert. "
+                "Bitte `psycopg[binary]` in den Requirements aufnehmen."
+            ) from exc
+
+        with self.connection() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                yield cursor
+
     def ping(self) -> bool:
         if not self.is_configured():
             return False
