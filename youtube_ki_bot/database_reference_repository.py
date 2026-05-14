@@ -112,6 +112,27 @@ class DatabaseReferenceRepository:
             rows = cursor.fetchall()
         return [self._serialize_database_row(row) for row in rows]
 
+    def list_tables(self) -> list[dict]:
+        sql = """
+        select
+            table_schema,
+            table_name
+        from information_schema.tables
+        where table_schema = 'public'
+          and table_type = 'BASE TABLE'
+        order by table_name asc
+        """
+        with self.database_client.dict_cursor() as cursor:
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+        return [
+            {
+                "schema": row["table_schema"],
+                "name": row["table_name"],
+            }
+            for row in rows
+        ]
+
     def get_database(self, database_id: str) -> Optional[dict]:
         sql = """
         select

@@ -87,7 +87,13 @@ def create_app() -> FastAPI:
     def list_databases():
         try:
             databases = api_service.list_databases()
-            return {"databases": databases}
+            tables = api_service.list_tables()
+            return {
+                "databases": databases,
+                "total": len(databases),
+                "tables": tables,
+                "table_total": len(tables),
+            }
         except ValueError as exc:
             return _error_response(str(exc), 400)
         except Exception as exc:

@@ -187,6 +187,10 @@ class ApiService:
         self._require_database()
         return self.database_repository.list_databases()
 
+    def list_tables(self) -> list[dict]:
+        self._require_database()
+        return self.database_repository.list_tables()
+
     def get_database(self, database_id: str) -> Optional[dict]:
         self._require_database()
         return self.database_repository.get_database(database_id)
