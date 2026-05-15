@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from youtube_ki_bot.database import DatabaseClient
+from youtube_ki_bot.database_reference_repository import DatabaseReferenceRepository
 
 
 def _read_csv_rows(path: Path) -> list:
@@ -71,6 +72,165 @@ class DatabaseImporter:
             "reference_memberships": reference_count,
             "embeddings": embedding_count,
         }
+
+    def import_from_reference_library(self) -> dict:
+        if not self.database_client.is_configured():
+            raise ValueError("DATABASE_URL fehlt.")
+        if not self.paths.reference_library_path.exists():
+            raise FileNotFoundError(
+                f"Referenzbibliothek fehlt: {self.paths.reference_library_path}"
+            )
+
+        references_payload = json.loads(
+            self.paths.reference_library_path.read_text(encoding="utf-8")
+        )
+        references = references_payload.get("references", [])
+
+        embedding_payload = {}
+        if self.paths.embedding_index_path.exists():
+            embedding_payload = json.loads(
+                self.paths.embedding_index_path.read_text(encoding="utf-8")
+            )
+
+        transcript_payload_by_video = {}
+        if self.paths.transcripts_dir.exists():
+            for transcript_path in self.paths.transcripts_dir.glob("*.json"):
+                try:
+                    payload = json.loads(transcript_path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    continue
+                video_id = payload.get("video_id")
+                if video_id:
+                    transcript_payload_by_video[video_id] = payload
+
+        video_rows = self._build_video_rows_from_references(references)
+        transcript_rows = self._build_transcript_rows_from_references(
+            references,
+            transcript_payload_by_video,
+        )
+        analysis_rows = self._build_analysis_rows_from_references(references)
+        reference_rows = self._build_reference_membership_rows(references)
+
+        repository = DatabaseReferenceRepository(self.database_client)
+        repository.ensure_multi_database_support()
+
+        with self.database_client.connection() as connection:
+            with connection.cursor() as cursor:
+                video_count = self._upsert_videos(cursor, video_rows)
+                transcript_count = self._upsert_transcripts(cursor, transcript_rows)
+                analysis_count = self._upsert_analysis(cursor, analysis_rows)
+                reference_count = self._replace_reference_memberships(cursor, reference_rows)
+                embedding_count = self._upsert_embeddings(cursor, embedding_payload)
+            connection.commit()
+
+        repository.add_references_to_database(
+            "default",
+            [reference["video_id"] for reference in references],
+        )
+
+        return {
+            "videos": video_count,
+            "transcripts": transcript_count,
+            "analysis": analysis_count,
+            "reference_memberships": reference_count,
+            "embeddings": embedding_count,
+            "database_references": len(references),
+        }
+
+    @staticmethod
+    def _build_video_rows_from_references(references: list) -> list:
+        return [
+            {
+                "video_id": reference["video_id"],
+                "title": reference.get("title", ""),
+                "url": reference.get("url", ""),
+                "published_at": reference.get("published_at") or None,
+                "duration_seconds": int(reference.get("duration_seconds", 0) or 0),
+                "views": int(reference.get("views", 0) or 0),
+                "likes": int(reference.get("likes", 0) or 0),
+                "comments": int(reference.get("comments", 0) or 0),
+            }
+            for reference in references
+        ]
+
+    @staticmethod
+    def _build_transcript_rows_from_references(
+        references: list,
+        transcript_payload_by_video: dict,
+    ) -> list:
+        rows = []
+        for reference in references:
+            payload = transcript_payload_by_video.get(reference["video_id"], {})
+            rows.append(
+                {
+                    "video_id": reference["video_id"],
+                    "transcript_source": payload.get("transcript_source") or "reference_library",
+                    "transcript_status": "backfilled",
+                    "transcript_language_code": payload.get("language_code") or "",
+                    "transcript_language": payload.get("language") or "",
+                    "transcript_is_generated": payload.get("is_generated", False),
+                    "transcript_text": payload.get("text") or reference.get("transcript_text", ""),
+                    "segments_json": json.dumps(payload.get("segments", []), ensure_ascii=False),
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _build_analysis_rows_from_references(references: list) -> list:
+        rows = []
+        for reference in references:
+            top_reference_groups = reference.get("top_reference_groups", [])
+            if isinstance(top_reference_groups, list):
+                top_reference_groups_text = ", ".join(top_reference_groups)
+            else:
+                top_reference_groups_text = str(top_reference_groups or "")
+            rows.append(
+                {
+                    "video_id": reference["video_id"],
+                    "hook_text": reference.get("hook_text", ""),
+                    "platform_labels_text": ", ".join(reference.get("platform_labels", [])),
+                    "mentioned_platform_labels_text": ", ".join(
+                        reference.get("mentioned_platform_labels", [])
+                    ),
+                    "secondary_platform_labels_text": ", ".join(
+                        reference.get("secondary_platform_labels", [])
+                    ),
+                    "format_labels_text": ", ".join(reference.get("format_labels", [])),
+                    "hook_labels_text": ", ".join(reference.get("hook_labels", [])),
+                    "taxonomy_confidence_score": reference.get("taxonomy_confidence_score", 0),
+                    "word_count": reference.get("word_count", 0),
+                    "question_count": reference.get("question_count", 0),
+                    "exclamation_count": reference.get("exclamation_count", 0),
+                    "cta_present": reference.get("cta_present", False),
+                    "direct_address_present": reference.get("direct_address_present", False),
+                    "is_top_reference": reference.get("is_top_reference", False),
+                    "top_reference_group_count": reference.get("top_reference_group_count", 0),
+                    "top_reference_groups": top_reference_groups_text,
+                    "like_rate": reference.get("like_rate", 0),
+                    "comment_rate": reference.get("comment_rate", 0),
+                    "likes": reference.get("likes", 0),
+                    "views": reference.get("views", 0),
+                    "comments": reference.get("comments", 0),
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _build_reference_membership_rows(references: list) -> list:
+        rows = []
+        for reference in references:
+            for membership in reference.get("reference_memberships", []):
+                rows.append(
+                    {
+                        "video_id": reference["video_id"],
+                        "group_type": membership.get("group_type", ""),
+                        "group_label": membership.get("group_label", ""),
+                        "selected_rank": membership.get("selected_rank", 0),
+                        "group_video_count": membership.get("group_video_count", 0),
+                        "selection_percent": membership.get("selection_percent", 0),
+                    }
+                )
+        return rows
 
     @staticmethod
     def _upsert_videos(cursor, rows: list) -> int:
@@ -142,7 +302,7 @@ class DatabaseImporter:
                     "language": row.get("transcript_language") or None,
                     "is_generated": _to_bool(row.get("transcript_is_generated")),
                     "transcript_text": row.get("transcript_text", ""),
-                    "segments_json": "[]",
+                    "segments_json": row.get("segments_json", "[]"),
                 }
             )
         if payload:

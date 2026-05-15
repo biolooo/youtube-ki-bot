@@ -110,6 +110,13 @@ def import_database(config, paths):
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
+def backfill_database(config, paths):
+    database_client = DatabaseClient(config.database_url)
+    importer = DatabaseImporter(database_client, paths)
+    result = importer.import_from_reference_library()
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 def retrieve_references(config, paths, args):
     api_service = ApiService(config, paths)
     results = api_service.retrieve_references(
@@ -156,10 +163,10 @@ def generate_script(config, paths, args):
         print("\nScript wurde nicht automatisch gespeichert.")
 
 
-def sync_channel(config, paths):
+def sync_channel(config, paths, process_limit=None):
     from youtube_ki_bot.channel_sync_service import ChannelSyncService
 
-    result = ChannelSyncService(config, paths).run()
+    result = ChannelSyncService(config, paths).run(process_limit=process_limit)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
@@ -172,7 +179,29 @@ def build_parser():
     subparsers.add_parser("build-embeddings", help="OpenAI Embeddings für Referenzbibliothek bauen")
     subparsers.add_parser("db-health", help="Datenbank-Verbindung prüfen")
     subparsers.add_parser("db-import", help="Bestehende Daten nach Postgres/Supabase importieren")
-    subparsers.add_parser("sync-channel", help="Kanal scannen, neue Videos verarbeiten und DB aktualisieren")
+    subparsers.add_parser(
+        "db-backfill-references",
+        help="DB aus reference_library.json, embedding_index.json und transcripts/ backfillen",
+    )
+    sync_parser = subparsers.add_parser(
+        "sync-channel",
+        help="Kanal scannen, alle Kennzahlen aktualisieren und fehlende Shorts verarbeiten",
+    )
+    sync_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Maximale Anzahl fehlender Shorts, die in diesem Lauf transkribiert werden",
+    )
+
+    daily_sync_parser = subparsers.add_parser(
+        "daily-sync",
+        help="Tageslauf: alle Metriken aktualisieren und standardmäßig max. 5 fehlende Shorts verarbeiten",
+    )
+    daily_sync_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Optionales Override für den Tageslauf. Standard kommt aus SYNC_MAX_SHORTS_PER_RUN.",
+    )
 
     retrieve_parser = subparsers.add_parser("retrieve", help="Beste Referenzvideos abrufen")
     retrieve_parser.add_argument("--query", default="", help="Freitext-Idee oder Suchquery")
@@ -196,7 +225,7 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
     command = args.command or "pipeline"
-    require_youtube = command == "pipeline"
+    require_youtube = command in {"pipeline", "sync-channel", "daily-sync"}
     config, paths = load_app_config(base_dir, require_youtube=require_youtube)
 
     if command == "pipeline":
@@ -215,8 +244,14 @@ def main():
     if command == "db-import":
         import_database(config, paths)
         return
+    if command == "db-backfill-references":
+        backfill_database(config, paths)
+        return
     if command == "sync-channel":
-        sync_channel(config, paths)
+        sync_channel(config, paths, process_limit=args.limit)
+        return
+    if command == "daily-sync":
+        sync_channel(config, paths, process_limit=args.limit)
         return
     if command == "retrieve":
         retrieve_references(config, paths, args)

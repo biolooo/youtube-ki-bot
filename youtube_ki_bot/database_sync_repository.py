@@ -27,6 +27,13 @@ class DatabaseSyncRepository:
                 cursor.execute("select video_id from reference_embeddings")
                 return {row[0] for row in cursor.fetchall()}
 
+    def load_analyzed_video_ids(self) -> set[str]:
+        with self.database_client.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("select video_id from video_analysis")
+                return {row[0] for row in cursor.fetchall()}
+
+
     def upsert_videos(self, videos: list[dict]) -> int:
         sql = """
         insert into videos (

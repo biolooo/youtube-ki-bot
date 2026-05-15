@@ -1,3 +1,5 @@
+from typing import Optional
+
 from youtube_ki_bot.analysis_service import AnalysisService
 from youtube_ki_bot.database import DatabaseClient
 from youtube_ki_bot.database_reference_repository import DatabaseReferenceRepository
@@ -39,11 +41,12 @@ class ChannelSyncService:
             model=config.embedding_model,
         )
 
-    def run(self) -> dict:
+    def run(self, process_limit: Optional[int] = None) -> dict:
         if not self.sync_repository.is_configured():
             raise ValueError("DATABASE_URL fehlt.")
 
         existing_video_ids = self.sync_repository.load_existing_video_ids()
+        analyzed_video_ids = self.sync_repository.load_analyzed_video_ids()
 
         uploads_playlist_id = self.youtube_service.get_uploads_playlist_id(self.config.channel_id)
         all_video_ids = self.youtube_service.get_all_video_ids(uploads_playlist_id)
@@ -53,25 +56,36 @@ class ChannelSyncService:
             video for video in shorts
             if video["video_id"] not in existing_video_ids
         ]
+        missing_analyzed_shorts = [
+            video for video in shorts
+            if video["video_id"] not in analyzed_video_ids
+        ]
+
+        sync_limit = self.config.sync_max_shorts_per_run if process_limit is None else process_limit
+        shorts_to_process = self._select_shorts_to_process(
+            new_shorts=new_shorts,
+            missing_analyzed_shorts=missing_analyzed_shorts,
+            limit=sync_limit,
+        )
 
         updated_videos = self.sync_repository.upsert_videos(all_videos)
 
-        enriched_new_shorts = []
-        if new_shorts:
-            enriched_new_shorts = self.transcript_service.enrich_shorts_with_transcripts(
-                shorts=new_shorts,
+        enriched_shorts = []
+        if shorts_to_process:
+            enriched_shorts = self.transcript_service.enrich_shorts_with_transcripts(
+                shorts=shorts_to_process,
                 languages=self.config.transcript_languages,
                 whisper_model_name=self.config.whisper_model_name,
                 keep_audio_files=self.config.keep_audio_files,
-                transcript_limit=len(new_shorts),
+                transcript_limit=len(shorts_to_process),
                 transcript_top_percent=1.0,
                 transcriptlol_max_workers=self.config.transcriptlol_max_workers,
             )
 
-        transcript_updates = self.sync_repository.upsert_transcripts(enriched_new_shorts)
+        transcript_updates = self.sync_repository.upsert_transcripts(enriched_shorts)
         new_analyzed_shorts = [
             analyzed for analyzed in (
-                self.analysis_service.analyze_short(short) for short in enriched_new_shorts
+                self.analysis_service.analyze_short(short) for short in enriched_shorts
             )
             if analyzed
         ]
@@ -107,7 +121,10 @@ class ChannelSyncService:
         return {
             "videos_seen": len(all_videos),
             "shorts_seen": len(shorts),
-            "new_shorts": len(new_shorts),
+            "new_shorts_detected": len(new_shorts),
+            "missing_shorts_detected": len(missing_analyzed_shorts),
+            "processed_shorts": len(shorts_to_process),
+            "sync_max_shorts_per_run": sync_limit,
             "videos_upserted": updated_videos,
             "transcripts_upserted": transcript_updates,
             "analysis_rows_upserted": analysis_updates,
@@ -115,6 +132,27 @@ class ChannelSyncService:
             "embeddings_upserted": embedding_updates,
             "transcript_method_stats": self.transcript_service.last_run_stats,
         }
+
+    @staticmethod
+    def _select_shorts_to_process(
+        new_shorts: list[dict],
+        missing_analyzed_shorts: list[dict],
+        limit: int,
+    ) -> list[dict]:
+        if limit <= 0:
+            return []
+
+        seen_ids = set()
+        ordered = []
+        for video in new_shorts + missing_analyzed_shorts:
+            video_id = video["video_id"]
+            if video_id in seen_ids:
+                continue
+            seen_ids.add(video_id)
+            ordered.append(video)
+            if len(ordered) >= limit:
+                break
+        return ordered
 
     def _sync_embeddings(self, new_analyzed_shorts: list, merged_analyzed_shorts: list) -> int:
         if not self.embedding_service.is_available() or not merged_analyzed_shorts:

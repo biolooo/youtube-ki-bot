@@ -21,6 +21,7 @@ DEFAULT_TRANSCRIPTLOL_LANGUAGE = "de"
 DEFAULT_TRANSCRIPTLOL_POLL_SECONDS = 5
 DEFAULT_TRANSCRIPTLOL_TIMEOUT_SECONDS = 600
 DEFAULT_TRANSCRIPTLOL_MAX_WORKERS = 4
+DEFAULT_SYNC_MAX_SHORTS_PER_RUN = 5
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class AppConfig:
     transcriptlol_poll_seconds: int
     transcriptlol_timeout_seconds: int
     transcriptlol_max_workers: int
+    sync_max_shorts_per_run: int
     database_url: Optional[str]
     persist_generated_scripts: bool
 
@@ -141,6 +143,12 @@ def load_app_config(base_dir: Path, require_youtube: bool = True) -> tuple[AppCo
         or transcript_top_percent > 1
     ):
         raise ValueError("TRANSCRIPT_TOP_PERCENT muss zwischen 0 und 1 liegen.")
+    sync_max_shorts_per_run = get_env_int(
+        "SYNC_MAX_SHORTS_PER_RUN",
+        DEFAULT_SYNC_MAX_SHORTS_PER_RUN,
+    )
+    if sync_max_shorts_per_run is None or sync_max_shorts_per_run <= 0:
+        raise ValueError("SYNC_MAX_SHORTS_PER_RUN muss eine positive ganze Zahl sein.")
 
     config = AppConfig(
         api_key=api_key,
@@ -172,6 +180,7 @@ def load_app_config(base_dir: Path, require_youtube: bool = True) -> tuple[AppCo
             "TRANSCRIPTLOL_MAX_WORKERS",
             DEFAULT_TRANSCRIPTLOL_MAX_WORKERS,
         ),
+        sync_max_shorts_per_run=sync_max_shorts_per_run,
         database_url=os.getenv("DATABASE_URL"),
         persist_generated_scripts=get_env_bool("PERSIST_GENERATED_SCRIPTS", default=False),
     )
