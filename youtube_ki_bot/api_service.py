@@ -195,6 +195,18 @@ class ApiService:
         self._require_database()
         return self.database_repository.get_table_rows(schema, name, limit, offset)
 
+    def insert_table_row(self, schema: str, name: str, data: dict) -> dict:
+        self._require_database()
+        return self.database_repository.insert_table_row(schema, name, data)
+
+    def update_table_rows(self, schema: str, name: str, match: dict, data: dict) -> dict:
+        self._require_database()
+        return self.database_repository.update_table_rows(schema, name, match, data)
+
+    def delete_table_rows(self, schema: str, name: str, match: dict) -> dict:
+        self._require_database()
+        return self.database_repository.delete_table_rows(schema, name, match)
+
     def get_database(self, database_id: str) -> Optional[dict]:
         self._require_database()
         return self.database_repository.get_database(database_id)

@@ -41,6 +41,19 @@ class DatabaseCreateBody(BaseModel):
     description: Optional[str] = None
 
 
+class TableInsertBody(BaseModel):
+    data: dict
+
+
+class TableUpdateBody(BaseModel):
+    match: dict
+    data: dict
+
+
+class TableDeleteBody(BaseModel):
+    match: dict
+
+
 def _allowed_origins() -> list:
     raw = os.getenv("API_ALLOWED_ORIGINS", "*")
     origins = [item.strip() for item in raw.split(",") if item.strip()]
@@ -108,6 +121,44 @@ def create_app() -> FastAPI:
     ):
         try:
             return api_service.get_table_rows(schema=schema, name=name, limit=limit, offset=offset)
+        except LookupError as exc:
+            return _error_response(str(exc), 404)
+        except ValueError as exc:
+            return _error_response(str(exc), 400)
+        except Exception as exc:
+            return _error_response(str(exc), 500)
+
+    @app.post("/tables/{schema}/{name}/rows")
+    def create_table_row(schema: str, name: str, body: TableInsertBody):
+        try:
+            return api_service.insert_table_row(schema=schema, name=name, data=body.data)
+        except LookupError as exc:
+            return _error_response(str(exc), 404)
+        except ValueError as exc:
+            return _error_response(str(exc), 400)
+        except Exception as exc:
+            return _error_response(str(exc), 500)
+
+    @app.patch("/tables/{schema}/{name}/rows")
+    def update_table_rows(schema: str, name: str, body: TableUpdateBody):
+        try:
+            return api_service.update_table_rows(
+                schema=schema,
+                name=name,
+                match=body.match,
+                data=body.data,
+            )
+        except LookupError as exc:
+            return _error_response(str(exc), 404)
+        except ValueError as exc:
+            return _error_response(str(exc), 400)
+        except Exception as exc:
+            return _error_response(str(exc), 500)
+
+    @app.delete("/tables/{schema}/{name}/rows")
+    def delete_table_rows(schema: str, name: str, body: TableDeleteBody):
+        try:
+            return api_service.delete_table_rows(schema=schema, name=name, match=body.match)
         except LookupError as exc:
             return _error_response(str(exc), 404)
         except ValueError as exc:

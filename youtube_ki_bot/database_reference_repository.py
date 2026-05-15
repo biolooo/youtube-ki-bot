@@ -183,6 +183,118 @@ class DatabaseReferenceRepository:
             "total": total,
         }
 
+    def insert_table_row(self, schema: str, name: str, data: dict) -> dict:
+        self._assert_table_allowed(schema, name)
+        if not data:
+            raise ValueError("data is required")
+
+        columns = self._load_table_columns(schema, name)
+        self._validate_payload_columns(data.keys(), columns)
+
+        from psycopg import sql
+        from psycopg.rows import dict_row
+
+        column_names = list(data.keys())
+        values = [data[column] for column in column_names]
+        with self.database_client.connection() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                query = sql.SQL(
+                    "insert into {}.{} ({}) values ({}) returning *"
+                ).format(
+                    sql.Identifier(schema),
+                    sql.Identifier(name),
+                    sql.SQL(", ").join(sql.Identifier(column) for column in column_names),
+                    sql.SQL(", ").join(sql.Placeholder() for _ in column_names),
+                )
+                cursor.execute(query, values)
+                row = cursor.fetchone()
+            connection.commit()
+
+        return {
+            "schema": schema,
+            "name": name,
+            "row": self._serialize_table_row(columns, row),
+        }
+
+    def update_table_rows(self, schema: str, name: str, match: dict, data: dict) -> dict:
+        self._assert_table_allowed(schema, name)
+        if not match:
+            raise ValueError("match is required")
+        if not data:
+            raise ValueError("data is required")
+
+        columns = self._load_table_columns(schema, name)
+        self._validate_payload_columns(match.keys(), columns)
+        self._validate_payload_columns(data.keys(), columns)
+
+        from psycopg import sql
+        from psycopg.rows import dict_row
+
+        data_columns = list(data.keys())
+        match_columns = list(match.keys())
+        values = [data[column] for column in data_columns] + [match[column] for column in match_columns]
+
+        with self.database_client.connection() as connection:
+            with connection.cursor(row_factory=dict_row) as cursor:
+                query = sql.SQL(
+                    "update {}.{} set {} where {} returning *"
+                ).format(
+                    sql.Identifier(schema),
+                    sql.Identifier(name),
+                    sql.SQL(", ").join(
+                        sql.SQL("{} = {}").format(sql.Identifier(column), sql.Placeholder())
+                        for column in data_columns
+                    ),
+                    sql.SQL(" and ").join(
+                        sql.SQL("{} = {}").format(sql.Identifier(column), sql.Placeholder())
+                        for column in match_columns
+                    ),
+                )
+                cursor.execute(query, values)
+                rows = cursor.fetchall()
+            connection.commit()
+
+        return {
+            "schema": schema,
+            "name": name,
+            "updated": len(rows),
+            "rows": [self._serialize_table_row(columns, row) for row in rows],
+        }
+
+    def delete_table_rows(self, schema: str, name: str, match: dict) -> dict:
+        self._assert_table_allowed(schema, name)
+        if not match:
+            raise ValueError("match is required")
+
+        columns = self._load_table_columns(schema, name)
+        self._validate_payload_columns(match.keys(), columns)
+
+        from psycopg import sql
+
+        match_columns = list(match.keys())
+        values = [match[column] for column in match_columns]
+        with self.database_client.connection() as connection:
+            with connection.cursor() as cursor:
+                query = sql.SQL(
+                    "delete from {}.{} where {}"
+                ).format(
+                    sql.Identifier(schema),
+                    sql.Identifier(name),
+                    sql.SQL(" and ").join(
+                        sql.SQL("{} = {}").format(sql.Identifier(column), sql.Placeholder())
+                        for column in match_columns
+                    ),
+                )
+                cursor.execute(query, values)
+                deleted = cursor.rowcount
+            connection.commit()
+
+        return {
+            "schema": schema,
+            "name": name,
+            "deleted": deleted,
+        }
+
     def get_database(self, database_id: str) -> Optional[dict]:
         sql = """
         select
@@ -440,6 +552,12 @@ class DatabaseReferenceRepository:
                 )
                 rows = cursor.fetchall()
         return [row[0] for row in rows]
+
+    @staticmethod
+    def _validate_payload_columns(payload_columns, table_columns: list[str]) -> None:
+        unknown_columns = [column for column in payload_columns if column not in table_columns]
+        if unknown_columns:
+            raise ValueError(f"Unknown columns: {', '.join(sorted(unknown_columns))}")
 
     @staticmethod
     def _serialize_table_row(columns: list[str], row: dict) -> dict:
