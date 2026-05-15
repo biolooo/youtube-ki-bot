@@ -271,14 +271,13 @@ class ApiService:
             api_key=self.config.openai_api_key,
             model=self.config.generation_model,
         )
-        output = generator.generate_script(
+        payload = generator.generate_script(
             brief=request.to_prompt_brief(),
             retrieval_results=retrieval_results,
             platform=request.platform,
             format_label=request.format_label,
             hook_label=request.hook_label,
         )
-        payload = self._extract_json_payload(output)
         output_path = None
         if self.config.persist_generated_scripts:
             output_path = self._save_generated_script(request, payload, retrieval_results)
@@ -290,15 +289,6 @@ class ApiService:
                 model=generator.model,
             )
         return payload, retrieval_results, output_path
-
-    @staticmethod
-    def _extract_json_payload(text: str) -> dict:
-        cleaned = text.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.removeprefix("```json").removeprefix("```").strip()
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3].strip()
-        return json.loads(cleaned)
 
     def _save_generated_script(self, request: GenerationRequest, payload: dict, retrieval_results: list) -> Path:
         ensure_directory(self.paths.generated_scripts_dir)

@@ -1,11 +1,14 @@
 import json
 
+from youtube_ki_bot.prompt_builder import PromptBuilder
+
 
 class ScriptGenerationService:
     def __init__(self, api_key=None, model="gpt-5.5"):
         self.api_key = api_key
         self.model = model
         self._client = None
+        self.prompt_builder = PromptBuilder()
 
     def is_available(self) -> bool:
         return bool(self.api_key)
@@ -21,25 +24,6 @@ class ScriptGenerationService:
             self._client = OpenAI(api_key=self.api_key)
         return self._client
 
-    @staticmethod
-    def build_reference_payload(retrieval_results: list) -> list:
-        payload = []
-        for item in retrieval_results:
-            reference = item["reference"]
-            payload.append(
-                {
-                    "score": item["score"],
-                    "title": reference["title"],
-                    "hook_text": reference["hook_text"],
-                    "platform_labels": reference["platform_labels"],
-                    "format_labels": reference["format_labels"],
-                    "hook_labels": reference["hook_labels"],
-                    "views": reference["views"],
-                    "transcript_text": reference["transcript_text"][:1600],
-                }
-            )
-        return payload
-
     def generate_script(
         self,
         brief: str,
@@ -47,22 +31,34 @@ class ScriptGenerationService:
         platform: str = None,
         format_label: str = None,
         hook_label: str = None,
-    ) -> str:
+    ) -> dict:
         client = self._get_client()
-        reference_payload = self.build_reference_payload(retrieval_results)
-        prompt = (
-            "Du schreibst ein neues YouTube-Short-Script auf Basis erfolgreicher Referenzen.\n"
-            "Nutze die Referenzen als Stil- und Strukturvorlage, kopiere aber nichts wörtlich.\n"
-            "Gib die Antwort als JSON mit den Feldern "
-            "`title_ideas`, `hook`, `script`, `cta`, `why_this_should_work` zurück.\n\n"
-            f"Zielplattform: {platform or 'offen'}\n"
-            f"Zielformat: {format_label or 'offen'}\n"
-            f"Zielhook: {hook_label or 'offen'}\n"
-            f"Briefing: {brief}\n\n"
-            f"Referenzen:\n{json.dumps(reference_payload, ensure_ascii=False, indent=2)}"
+        prompt = self.prompt_builder.build(
+            brief=brief,
+            retrieval_results=retrieval_results,
+            platform=platform,
+            format_label=format_label,
+            hook_label=hook_label,
         )
         response = client.responses.create(
             model=self.model,
             input=prompt,
         )
-        return response.output_text
+        raw_payload = self._extract_json_payload(response.output_text)
+        return self.prompt_builder.normalize_payload(raw_payload)
+
+    @staticmethod
+    def _extract_json_payload(text: str) -> dict:
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.removeprefix("```json").removeprefix("```").strip()
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3].strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                raise
+            return json.loads(cleaned[start:end + 1])
