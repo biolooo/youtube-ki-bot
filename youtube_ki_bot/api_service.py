@@ -10,7 +10,9 @@ from youtube_ki_bot.embedding_service import EmbeddingService
 from youtube_ki_bot.generation_service import ScriptGenerationService
 from youtube_ki_bot.reference_repository import ReferenceRepository
 from youtube_ki_bot.retrieval_service import RetrievalService
+from youtube_ki_bot.settings import load_taxonomy
 from youtube_ki_bot.storage import CsvJsonStorage
+from youtube_ki_bot.taxonomy_service import TaxonomyClassifier
 from youtube_ki_bot.settings import ensure_directory
 from youtube_ki_bot.text_utils import normalize_for_matching
 
@@ -25,6 +27,7 @@ class ApiService:
         self.database_client = DatabaseClient(config.database_url)
         self.database_repository = DatabaseReferenceRepository(self.database_client)
         self.generation_repository = DatabaseGenerationRepository(self.database_client)
+        self.taxonomy_classifier = TaxonomyClassifier(load_taxonomy(paths.taxonomy_path))
         if self.database_repository.is_configured():
             self.database_repository.ensure_multi_database_support()
 
@@ -125,14 +128,20 @@ class ApiService:
         )
 
     def retrieve_references(self, request: RetrievalRequest) -> list:
+        resolved_platform, resolved_format_label, resolved_hook_label = self._resolve_request_filters(
+            query_text=request.query_text,
+            platform=request.platform,
+            format_label=request.format_label,
+            hook_label=request.hook_label,
+        )
         references = self._load_reference_library(request.database_id)
         retrieval_service = self._build_retrieval_service()
         return retrieval_service.retrieve(
             references=references,
             query_text=request.query_text,
-            platform=request.platform,
-            format_label=request.format_label,
-            hook_label=request.hook_label,
+            platform=resolved_platform,
+            format_label=resolved_format_label,
+            hook_label=resolved_hook_label,
             top_k=request.top_k,
             embedding_index=self._load_embedding_index(request.database_id),
         )
@@ -265,6 +274,12 @@ class ApiService:
             raise ValueError("OPENAI_API_KEY fehlt. Script-Generierung ist nicht verfügbar.")
 
         retrieval_request = RetrievalRequest.from_generation_request(request)
+        resolved_platform, resolved_format_label, resolved_hook_label = self._resolve_request_filters(
+            query_text=retrieval_request.query_text,
+            platform=request.platform,
+            format_label=request.format_label,
+            hook_label=request.hook_label,
+        )
         retrieval_results = self.retrieve_references(retrieval_request)
 
         generator = ScriptGenerationService(
@@ -274,9 +289,9 @@ class ApiService:
         payload = generator.generate_script(
             brief=request.to_prompt_brief(),
             retrieval_results=retrieval_results,
-            platform=request.platform,
-            format_label=request.format_label,
-            hook_label=request.hook_label,
+            platform=resolved_platform,
+            format_label=resolved_format_label,
+            hook_label=resolved_hook_label,
         )
         output_path = None
         if self.config.persist_generated_scripts:
@@ -289,6 +304,42 @@ class ApiService:
                 model=generator.model,
             )
         return payload, retrieval_results, output_path
+
+    def _resolve_request_filters(
+        self,
+        query_text: str,
+        platform: Optional[str] = None,
+        format_label: Optional[str] = None,
+        hook_label: Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        if platform and format_label and hook_label:
+            return platform, format_label, hook_label
+
+        inferred = self.taxonomy_classifier.classify_video(
+            title=query_text or "",
+            transcript_text=query_text or "",
+            hook_text=query_text or "",
+        )
+        resolved_platform = platform or self._first_non_fallback(
+            inferred.get("platform_labels", []),
+            "other_platform",
+        )
+        resolved_format_label = format_label or self._first_non_fallback(
+            inferred.get("format_labels", []),
+            "other_format",
+        )
+        resolved_hook_label = hook_label or self._first_non_fallback(
+            inferred.get("hook_labels", []),
+            "other_hook",
+        )
+        return resolved_platform, resolved_format_label, resolved_hook_label
+
+    @staticmethod
+    def _first_non_fallback(labels: list[str], fallback_label: str) -> Optional[str]:
+        for label in labels or []:
+            if label != fallback_label:
+                return label
+        return None
 
     def _save_generated_script(self, request: GenerationRequest, payload: dict, retrieval_results: list) -> Path:
         ensure_directory(self.paths.generated_scripts_dir)

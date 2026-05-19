@@ -16,6 +16,12 @@ class GenerationRequest:
     freeform_brief: Optional[str] = None
     top_k: int = 5
 
+    def to_content_text(self) -> str:
+        parts = [self.topic.strip()]
+        if self.freeform_brief:
+            parts.append(self.freeform_brief.strip())
+        return "\n".join(part for part in parts if part).strip()
+
     def to_prompt_brief(self) -> str:
         parts = [f"Thema: {self.topic}"]
         if self.goal:
@@ -46,7 +52,7 @@ class RetrievalRequest:
     @classmethod
     def from_generation_request(cls, request: GenerationRequest) -> "RetrievalRequest":
         return cls(
-            query_text=request.to_prompt_brief(),
+            query_text=request.to_content_text(),
             database_id=request.database_id,
             platform=request.platform,
             format_label=request.format_label,
