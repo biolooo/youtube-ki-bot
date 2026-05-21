@@ -106,6 +106,8 @@ class YouTubeDataService:
                     {
                         "video_id": video["id"],
                         "title": snippet.get("title", ""),
+                        "description": snippet.get("description", ""),
+                        "channel": snippet.get("channelTitle", ""),
                         "views": int(statistics.get("viewCount", 0)),
                         "likes": int(statistics.get("likeCount", 0)),
                         "comments": int(statistics.get("commentCount", 0)),
@@ -116,6 +118,12 @@ class YouTubeDataService:
                     }
                 )
         return videos
+
+    def fetch_single_video_detail(self, video_id: str) -> dict:
+        results = self.fetch_video_details([video_id])
+        if not results:
+            raise ValueError(f"Kein Video für ID {video_id} gefunden.")
+        return results[0]
 
     @staticmethod
     def filter_and_sort_shorts(videos: list) -> list:

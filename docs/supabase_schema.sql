@@ -4,12 +4,15 @@ create table if not exists videos (
     video_id text primary key,
     title text not null,
     url text not null,
+    description text,
+    channel text,
     published_at timestamptz,
     duration_seconds integer not null default 0,
     views bigint not null default 0,
     likes bigint not null default 0,
     comments bigint not null default 0,
     is_short boolean not null default false,
+    last_reused_at timestamptz,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now()
 );

@@ -37,21 +37,24 @@ class DatabaseSyncRepository:
     def upsert_videos(self, videos: list[dict]) -> int:
         sql = """
         insert into videos (
-            video_id, title, url, published_at, duration_seconds,
-            views, likes, comments, is_short, updated_at
+            video_id, title, url, description, channel, published_at, duration_seconds,
+            views, likes, comments, is_short, last_reused_at, updated_at
         ) values (
-            %(video_id)s, %(title)s, %(url)s, %(published_at)s, %(duration_seconds)s,
-            %(views)s, %(likes)s, %(comments)s, %(is_short)s, now()
+            %(video_id)s, %(title)s, %(url)s, %(description)s, %(channel)s, %(published_at)s, %(duration_seconds)s,
+            %(views)s, %(likes)s, %(comments)s, %(is_short)s, %(last_reused_at)s, now()
         )
         on conflict (video_id) do update set
             title = excluded.title,
             url = excluded.url,
+            description = coalesce(excluded.description, videos.description),
+            channel = coalesce(excluded.channel, videos.channel),
             published_at = excluded.published_at,
             duration_seconds = excluded.duration_seconds,
             views = excluded.views,
             likes = excluded.likes,
             comments = excluded.comments,
             is_short = excluded.is_short,
+            last_reused_at = coalesce(excluded.last_reused_at, videos.last_reused_at),
             updated_at = now()
         """
         payload = [
@@ -59,12 +62,15 @@ class DatabaseSyncRepository:
                 "video_id": video["video_id"],
                 "title": video["title"],
                 "url": video["url"],
+                "description": video.get("description") or None,
+                "channel": video.get("channel") or None,
                 "published_at": video.get("published_at") or None,
                 "duration_seconds": int(video.get("duration_seconds", 0) or 0),
                 "views": int(video.get("views", 0) or 0),
                 "likes": int(video.get("likes", 0) or 0),
                 "comments": int(video.get("comments", 0) or 0),
                 "is_short": bool(video.get("is_short")),
+                "last_reused_at": video.get("last_reused_at") or None,
             }
             for video in videos
         ]

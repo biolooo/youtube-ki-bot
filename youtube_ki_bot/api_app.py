@@ -54,6 +54,22 @@ class TableDeleteBody(BaseModel):
     match: dict
 
 
+class PolishTextBody(BaseModel):
+    text: str
+
+
+class ExtractHooksBody(BaseModel):
+    text: str
+    top_k: int = Field(default=6, ge=1, le=20)
+
+
+class CompleteVideoBody(BaseModel):
+    video_url: str
+    topic: Optional[str] = None
+    final_text: str
+    hook: Optional[str] = None
+
+
 def _allowed_origins() -> list:
     raw = os.getenv("API_ALLOWED_ORIGINS", "*")
     origins = [item.strip() for item in raw.split(",") if item.strip()]
@@ -95,6 +111,47 @@ def create_app() -> FastAPI:
     @app.get("/config/options")
     def options():
         return api_service.get_options()
+
+    @app.get("/topic-suggestions")
+    def topic_suggestions(limit: int = Query(default=3, ge=1, le=10)):
+        try:
+            return api_service.get_topic_suggestions(limit=limit)
+        except ValueError as exc:
+            return _error_response(str(exc), 400)
+        except Exception as exc:
+            return _error_response(str(exc), 502)
+
+    @app.post("/polish-text")
+    def polish_text(body: PolishTextBody):
+        try:
+            return api_service.polish_text(body.text)
+        except ValueError as exc:
+            return _error_response(str(exc), 400)
+        except Exception as exc:
+            return _error_response(str(exc), 502)
+
+    @app.post("/extract-hooks")
+    def extract_hooks(body: ExtractHooksBody):
+        try:
+            return api_service.extract_hooks(text=body.text, top_k=body.top_k)
+        except ValueError as exc:
+            return _error_response(str(exc), 400)
+        except Exception as exc:
+            return _error_response(str(exc), 502)
+
+    @app.post("/complete-video")
+    def complete_video(body: CompleteVideoBody):
+        try:
+            return api_service.complete_video(
+                video_url=body.video_url,
+                topic=body.topic,
+                final_text=body.final_text,
+                hook=body.hook,
+            )
+        except ValueError as exc:
+            return _error_response(str(exc), 400)
+        except Exception as exc:
+            return _error_response(str(exc), 502)
 
     @app.get("/databases")
     def list_databases():

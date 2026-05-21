@@ -236,21 +236,24 @@ class DatabaseImporter:
     def _upsert_videos(cursor, rows: list) -> int:
         sql = """
         insert into videos (
-            video_id, title, url, published_at, duration_seconds,
-            views, likes, comments, is_short, updated_at
+            video_id, title, url, description, channel, published_at, duration_seconds,
+            views, likes, comments, is_short, last_reused_at, updated_at
         ) values (
-            %(video_id)s, %(title)s, %(url)s, %(published_at)s, %(duration_seconds)s,
-            %(views)s, %(likes)s, %(comments)s, %(is_short)s, now()
+            %(video_id)s, %(title)s, %(url)s, %(description)s, %(channel)s, %(published_at)s, %(duration_seconds)s,
+            %(views)s, %(likes)s, %(comments)s, %(is_short)s, %(last_reused_at)s, now()
         )
         on conflict (video_id) do update set
             title = excluded.title,
             url = excluded.url,
+            description = coalesce(excluded.description, videos.description),
+            channel = coalesce(excluded.channel, videos.channel),
             published_at = excluded.published_at,
             duration_seconds = excluded.duration_seconds,
             views = excluded.views,
             likes = excluded.likes,
             comments = excluded.comments,
             is_short = excluded.is_short,
+            last_reused_at = coalesce(excluded.last_reused_at, videos.last_reused_at),
             updated_at = now()
         """
         payload = [
@@ -258,12 +261,15 @@ class DatabaseImporter:
                 "video_id": row["video_id"],
                 "title": row["title"],
                 "url": row["url"],
+                "description": row.get("description") or None,
+                "channel": row.get("channel") or None,
                 "published_at": row.get("published_at") or None,
                 "duration_seconds": _to_int(row.get("duration_seconds")),
                 "views": _to_int(row.get("views")),
                 "likes": _to_int(row.get("likes")),
                 "comments": _to_int(row.get("comments")),
                 "is_short": True,
+                "last_reused_at": row.get("last_reused_at") or None,
             }
             for row in rows
         ]

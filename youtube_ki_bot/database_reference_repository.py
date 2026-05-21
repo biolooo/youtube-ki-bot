@@ -41,6 +41,12 @@ class DatabaseReferenceRepository:
 
         ddl_statements = [
             """
+            alter table videos
+                add column if not exists description text,
+                add column if not exists channel text,
+                add column if not exists last_reused_at timestamptz
+            """,
+            """
             create table if not exists reference_databases (
                 id text primary key,
                 name text not null,
@@ -381,11 +387,14 @@ class DatabaseReferenceRepository:
             v.video_id,
             v.title,
             v.url,
+            v.description,
+            v.channel,
             v.views,
             v.likes,
             v.comments,
             v.duration_seconds,
             v.published_at,
+            v.last_reused_at,
             coalesce(a.hook_text, '') as hook_text,
             coalesce(a.platform_labels, '{{}}'::text[]) as platform_labels,
             coalesce(a.mentioned_platform_labels, '{{}}'::text[]) as mentioned_platform_labels,
@@ -422,11 +431,14 @@ class DatabaseReferenceRepository:
                     "video_id": row["video_id"],
                     "title": row["title"],
                     "url": row["url"],
+                    "description": row.get("description") or "",
+                    "channel": row.get("channel") or "",
                     "views": int(row["views"] or 0),
                     "likes": int(row["likes"] or 0),
                     "comments": int(row["comments"] or 0),
                     "duration_seconds": int(row["duration_seconds"] or 0),
                     "published_at": _to_iso(row["published_at"]) or "",
+                    "last_reused_at": _to_iso(row.get("last_reused_at")),
                     "hook_text": row["hook_text"] or "",
                     "platform_labels": list(row["platform_labels"] or []),
                     "mentioned_platform_labels": list(row["mentioned_platform_labels"] or []),
@@ -449,6 +461,60 @@ class DatabaseReferenceRepository:
                 }
             )
         return references
+
+    def get_topic_suggestion_candidates(self, limit: int, min_views: int = 50000) -> list[dict]:
+        sql = """
+        with candidates as (
+            select
+                v.video_id,
+                v.title,
+                v.url,
+                v.description,
+                v.channel,
+                v.views,
+                v.published_at,
+                v.last_reused_at,
+                coalesce(t.transcript_text, '') as transcript_text,
+                coalesce(a.hook_text, '') as hook_text,
+                coalesce(a.format_labels, '{}'::text[]) as format_labels
+            from video_analysis a
+            join videos v on v.video_id = a.video_id
+            left join transcripts t on t.video_id = a.video_id
+            where v.views >= %s
+              and v.published_at <= now() - interval '90 days'
+              and (
+                v.last_reused_at is null
+                or v.last_reused_at <= now() - interval '60 days'
+              )
+        )
+        select *
+        from candidates
+        order by views desc, published_at desc nulls last
+        limit %s
+        """
+        with self.database_client.dict_cursor() as cursor:
+            cursor.execute(sql, (min_views, max(limit * 10, limit)))
+            rows = cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    def update_last_reused_at(self, video_ids: list[str]) -> int:
+        if not video_ids:
+            return 0
+        unique_ids = sorted(set(video_ids))
+        with self.database_client.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    update videos
+                    set last_reused_at = now(),
+                        updated_at = now()
+                    where video_id = any(%s)
+                    """,
+                    (unique_ids,),
+                )
+                updated = cursor.rowcount
+            connection.commit()
+        return updated
 
     def load_embedding_index(self, database_id: Optional[str] = None) -> Optional[dict]:
         params = []

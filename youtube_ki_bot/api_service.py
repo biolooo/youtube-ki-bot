@@ -1,20 +1,27 @@
 import json
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qs, urlparse
 
 from youtube_ki_bot.app_models import GenerationRequest, RetrievalRequest
 from youtube_ki_bot.database import DatabaseClient
 from youtube_ki_bot.database_generation_repository import DatabaseGenerationRepository
 from youtube_ki_bot.database_reference_repository import DatabaseReferenceRepository
+from youtube_ki_bot.database_sync_repository import DatabaseSyncRepository
 from youtube_ki_bot.embedding_service import EmbeddingService
 from youtube_ki_bot.generation_service import ScriptGenerationService
+from youtube_ki_bot.analysis_service import AnalysisService
+from youtube_ki_bot.openai_text_service import OpenAITextService
 from youtube_ki_bot.reference_repository import ReferenceRepository
 from youtube_ki_bot.retrieval_service import RetrievalService
 from youtube_ki_bot.settings import load_taxonomy
 from youtube_ki_bot.storage import CsvJsonStorage
 from youtube_ki_bot.taxonomy_service import TaxonomyClassifier
 from youtube_ki_bot.settings import ensure_directory
-from youtube_ki_bot.text_utils import normalize_for_matching
+from youtube_ki_bot.text_utils import extract_hook_text, normalize_for_matching, split_sentences
+from youtube_ki_bot.transcript_service import TranscriptPipelineError, TranscriptService
+from youtube_ki_bot.transcriptlol_service import TranscriptLolService
+from youtube_ki_bot.youtube_service import YouTubeDataService
 
 
 class ApiService:
@@ -26,8 +33,30 @@ class ApiService:
         self._options = None
         self.database_client = DatabaseClient(config.database_url)
         self.database_repository = DatabaseReferenceRepository(self.database_client)
+        self.sync_repository = DatabaseSyncRepository(self.database_client)
         self.generation_repository = DatabaseGenerationRepository(self.database_client)
         self.taxonomy_classifier = TaxonomyClassifier(load_taxonomy(paths.taxonomy_path))
+        self.analysis_service = AnalysisService(self.taxonomy_classifier)
+        self.embedding_service = EmbeddingService(
+            api_key=self.config.openai_api_key,
+            model=self.config.embedding_model,
+        )
+        self.openai_text_service = OpenAITextService(api_key=self.config.openai_api_key)
+        self.youtube_service = (
+            YouTubeDataService(config.api_key) if config.api_key else None
+        )
+        transcriptlol_service = TranscriptLolService(
+            api_key=config.transcriptlol_api_key,
+            workspace_id=config.transcriptlol_workspace_id,
+            language=config.transcriptlol_language,
+            poll_seconds=config.transcriptlol_poll_seconds,
+            timeout_seconds=config.transcriptlol_timeout_seconds,
+        )
+        self.transcript_service = TranscriptService(
+            paths.transcripts_dir,
+            paths.audio_cache_dir,
+            transcriptlol_service=transcriptlol_service,
+        )
         if self.database_repository.is_configured():
             self.database_repository.ensure_multi_database_support()
 
@@ -121,10 +150,7 @@ class ApiService:
 
     def _build_retrieval_service(self) -> RetrievalService:
         return RetrievalService(
-            EmbeddingService(
-                api_key=self.config.openai_api_key,
-                model=self.config.embedding_model,
-            )
+            self.embedding_service
         )
 
     def retrieve_references(self, request: RetrievalRequest) -> list:
@@ -305,6 +331,180 @@ class ApiService:
             )
         return payload, retrieval_results, output_path
 
+    def get_topic_suggestions(self, limit: int = 3) -> dict:
+        self._require_database()
+        if not self.openai_text_service.is_available():
+            raise RuntimeError("OpenAI ist nicht verfügbar.")
+
+        candidates = self.database_repository.get_topic_suggestion_candidates(limit=limit)
+        suggestions = []
+        seen_format_combos = set()
+        for candidate in candidates:
+            format_combo = "|".join(candidate.get("format_labels") or [])
+            if format_combo in seen_format_combos:
+                continue
+            payload = self.openai_text_service.extract_topic_suggestion(
+                title=candidate.get("title", ""),
+                transcript_text=candidate.get("transcript_text", ""),
+                views=int(candidate.get("views") or 0),
+                last_used_at=(candidate.get("last_reused_at") or ""),
+            )
+            suggestions.append(
+                {
+                    "topic": str(payload.get("topic", "")).strip()[:90],
+                    "reason": str(payload.get("reason", "")).strip(),
+                    "last_used_at": self._to_optional_str(candidate.get("last_reused_at")),
+                    "views": int(candidate.get("views") or 0),
+                    "source_title": candidate.get("title", ""),
+                    "source_url": candidate.get("url", ""),
+                }
+            )
+            seen_format_combos.add(format_combo)
+            if len(suggestions) >= limit:
+                break
+        return {"suggestions": suggestions}
+
+    def polish_text(self, text: str) -> dict:
+        if not text or not text.strip():
+            raise ValueError("text is required")
+        if not self.openai_text_service.is_available():
+            raise RuntimeError("OpenAI ist nicht verfügbar.")
+        return {"polished_text": self.openai_text_service.polish_text(text.strip())}
+
+    def extract_hooks(self, text: str, top_k: int = 6) -> dict:
+        if not text or not text.strip():
+            raise ValueError("text is required")
+        references = self._load_reference_library()
+        filtered_references = [
+            reference for reference in references
+            if int(reference.get("views") or 0) >= 20000
+        ]
+        retrieval_service = self._build_retrieval_service()
+        retrieval_results = retrieval_service.retrieve(
+            references=filtered_references,
+            query_text=text.strip(),
+            top_k=top_k,
+            embedding_index=self._load_embedding_index(),
+        )
+        hooks = []
+        for item in retrieval_results:
+            reference = item["reference"]
+            hook_text = (reference.get("hook_text") or "").strip()
+            if not hook_text:
+                transcript_text = (reference.get("transcript_text") or "").strip()
+                if transcript_text and self.openai_text_service.is_available():
+                    hook_text = self.openai_text_service.distill_hook(transcript_text)
+                elif transcript_text:
+                    hook_text = self._extract_transcript_hook(transcript_text)
+            hooks.append(
+                {
+                    "hook": hook_text,
+                    "source_title": reference.get("title", ""),
+                    "source_url": reference.get("url", ""),
+                    "views": int(reference.get("views") or 0),
+                    "score": item["score"],
+                }
+            )
+        return {"hooks": hooks}
+
+    def complete_video(
+        self,
+        video_url: str,
+        final_text: str,
+        topic: Optional[str] = None,
+        hook: Optional[str] = None,
+    ) -> dict:
+        if not video_url or not video_url.strip():
+            raise ValueError("video_url is required")
+        if not final_text or not final_text.strip():
+            raise ValueError("final_text is required")
+        if not self.youtube_service:
+            raise RuntimeError("YouTube API ist nicht verfügbar.")
+        if not self.embedding_service.is_available():
+            raise RuntimeError("OpenAI ist nicht verfügbar.")
+
+        video_id = self._extract_video_id_from_url(video_url)
+        if not video_id:
+            raise ValueError("Ungültige YouTube-URL.")
+
+        video = self.youtube_service.fetch_single_video_detail(video_id)
+        transcript_text, transcript_source, transcript_status = self._fetch_complete_video_transcript(
+            video=video,
+            fallback_text=final_text,
+        )
+        hook_text = (hook or "").strip() or extract_hook_text(topic or video["title"], final_text.strip())
+        analyzed = self.analysis_service.analyze_short(
+            {
+                "video_id": video["video_id"],
+                "title": topic or video["title"],
+                "views": video["views"],
+                "likes": video["likes"],
+                "comments": video["comments"],
+                "duration_seconds": video["duration_seconds"],
+                "published_at": video["published_at"],
+                "url": video["url"],
+                "transcript_source": transcript_source,
+                "transcript_status": transcript_status,
+                "transcript_text": transcript_text,
+            }
+        )
+        if analyzed:
+            analyzed["hook_text"] = hook_text
+            analyzed["title"] = topic or video["title"]
+
+        video_row = {
+            "video_id": video["video_id"],
+            "title": topic or video["title"],
+            "url": video["url"],
+            "description": video.get("description", ""),
+            "channel": video.get("channel", ""),
+            "published_at": video.get("published_at"),
+            "duration_seconds": video.get("duration_seconds", 0),
+            "views": video.get("views", 0),
+            "likes": video.get("likes", 0),
+            "comments": video.get("comments", 0),
+            "is_short": bool(video.get("is_short")),
+            "last_reused_at": "now",
+        }
+
+        self._upsert_completed_video(video_row)
+        self.sync_repository.upsert_transcripts(
+            [
+                {
+                    "video_id": video["video_id"],
+                    "transcript_source": transcript_source,
+                    "transcript_status": transcript_status,
+                    "transcript_language_code": "",
+                    "transcript_language": "",
+                    "transcript_is_generated": False,
+                    "transcript_text": transcript_text,
+                }
+            ]
+        )
+        if analyzed:
+            self.sync_repository.upsert_analysis([analyzed])
+        embedding_text = self.embedding_service.build_embedding_text(
+            {
+                "title": topic or video["title"],
+                "hook_text": hook_text,
+                "platform_labels": analyzed.get("primary_platform_labels", []) if analyzed else [],
+                "format_labels": analyzed.get("format_labels", []) if analyzed else [],
+                "hook_labels": analyzed.get("hook_labels", []) if analyzed else [],
+                "transcript_text": transcript_text,
+            }
+        )
+        vector = self.embedding_service.embed_texts([embedding_text])[0]
+        self.sync_repository.upsert_embeddings(
+            self.embedding_service.model,
+            [{"video_id": video["video_id"], "embedding": vector}],
+        )
+        self.database_repository.add_references_to_database("default", [video["video_id"]])
+        related_refs = self.retrieve_references(RetrievalRequest(query_text=final_text, top_k=5))
+        self.database_repository.update_last_reused_at(
+            [item["reference"]["video_id"] for item in related_refs] + [video["video_id"]]
+        )
+        return {"ok": True, "id": video["video_id"]}
+
     def _resolve_request_filters(
         self,
         query_text: str,
@@ -340,6 +540,72 @@ class ApiService:
             if label != fallback_label:
                 return label
         return None
+
+    @staticmethod
+    def _extract_transcript_hook(transcript_text: str) -> str:
+        sentences = split_sentences(transcript_text or "")
+        return " ".join(sentences[:2]).strip()[:140]
+
+    def _fetch_complete_video_transcript(self, video: dict, fallback_text: str) -> tuple[str, str, str]:
+        try:
+            transcript_data = self.transcript_service.fetch_transcript_from_youtube(
+                video["video_id"],
+                self.config.transcript_languages,
+            )
+            return transcript_data.get("text", "").strip() or fallback_text.strip(), transcript_data.get("source", "youtube_transcript_api"), "fetched"
+        except TranscriptPipelineError:
+            return fallback_text.strip(), "manual_final_text", "fallback_final_text"
+
+    def _upsert_completed_video(self, video_row: dict) -> None:
+        with self.database_client.connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    insert into videos (
+                        video_id, title, url, description, channel, published_at, duration_seconds,
+                        views, likes, comments, is_short, last_reused_at, updated_at
+                    ) values (
+                        %(video_id)s, %(title)s, %(url)s, %(description)s, %(channel)s, %(published_at)s,
+                        %(duration_seconds)s, %(views)s, %(likes)s, %(comments)s, %(is_short)s, now(), now()
+                    )
+                    on conflict (video_id) do update set
+                        title = excluded.title,
+                        url = excluded.url,
+                        description = excluded.description,
+                        channel = excluded.channel,
+                        published_at = excluded.published_at,
+                        duration_seconds = excluded.duration_seconds,
+                        views = excluded.views,
+                        likes = excluded.likes,
+                        comments = excluded.comments,
+                        is_short = excluded.is_short,
+                        last_reused_at = now(),
+                        updated_at = now()
+                    """,
+                    video_row,
+                )
+            connection.commit()
+
+    @staticmethod
+    def _extract_video_id_from_url(video_url: str) -> Optional[str]:
+        parsed = urlparse(video_url.strip())
+        host = (parsed.netloc or "").lower()
+        path = (parsed.path or "").strip("/")
+        if "youtube.com" in host and path.startswith("shorts/"):
+            return path.split("/", 1)[1].split("/")[0]
+        if "youtube.com" in host:
+            return parse_qs(parsed.query).get("v", [None])[0]
+        if "youtu.be" in host:
+            return path.split("/")[0] if path else None
+        return None
+
+    @staticmethod
+    def _to_optional_str(value) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return str(value)
 
     def _save_generated_script(self, request: GenerationRequest, payload: dict, retrieval_results: list) -> Path:
         ensure_directory(self.paths.generated_scripts_dir)
