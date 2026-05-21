@@ -497,6 +497,27 @@ class DatabaseReferenceRepository:
             rows = cursor.fetchall()
         return [dict(row) for row in rows]
 
+    def load_recent_videos(self, limit: int) -> list[dict]:
+        sql = """
+        select
+            video_id,
+            title,
+            url,
+            description,
+            channel,
+            published_at,
+            views,
+            duration_seconds,
+            is_short
+        from videos
+        order by published_at desc nulls last, created_at desc
+        limit %s
+        """
+        with self.database_client.dict_cursor() as cursor:
+            cursor.execute(sql, (limit,))
+            rows = cursor.fetchall()
+        return [dict(row) for row in rows]
+
     def update_last_reused_at(self, video_ids: list[str]) -> int:
         if not video_ids:
             return 0

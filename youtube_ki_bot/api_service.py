@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 
 from youtube_ki_bot.app_models import GenerationRequest, RetrievalRequest
 from youtube_ki_bot.database import DatabaseClient
@@ -335,13 +337,55 @@ class ApiService:
         self._require_database()
         if not self.openai_text_service.is_available():
             raise RuntimeError("OpenAI ist nicht verfügbar.")
+        recent_100 = self.database_repository.load_recent_videos(100)
+        recent_20 = recent_100[:20]
+        if not recent_100:
+            return {"suggestions": []}
 
-        candidates = self.database_repository.get_topic_suggestion_candidates(limit=limit)
+        last_100_counts = Counter()
+        last_20_counts = Counter()
+
+        for video in recent_100:
+            combo = self._infer_video_type_combo(video)
+            if combo:
+                last_100_counts[combo] += 1
+
+        for video in recent_20:
+            combo = self._infer_video_type_combo(video)
+            if combo:
+                last_20_counts[combo] += 1
+
+        underrepresented = []
+        base_total = max(sum(last_100_counts.values()), 1)
+        for combo, count_100 in last_100_counts.items():
+            expected_20 = (count_100 / base_total) * min(len(recent_20), 20)
+            actual_20 = last_20_counts.get(combo, 0)
+            gap = expected_20 - actual_20
+            if gap > 0:
+                underrepresented.append(
+                    {
+                        "combo": combo,
+                        "count_100": count_100,
+                        "count_20": actual_20,
+                        "expected_20": round(expected_20, 2),
+                        "gap": round(gap, 2),
+                    }
+                )
+        underrepresented.sort(key=lambda item: (-item["gap"], -item["count_100"], item["combo"]))
+
+        references = self._load_reference_library()
         suggestions = []
-        seen_format_combos = set()
-        for candidate in candidates:
-            format_combo = "|".join(candidate.get("format_labels") or [])
-            if format_combo in seen_format_combos:
+        used_video_ids = set()
+
+        for item in underrepresented:
+            platform, format_label = item["combo"].split("__", 1)
+            candidate = self._find_topic_candidate(
+                references=references,
+                platform=platform,
+                format_label=format_label,
+                used_video_ids=used_video_ids,
+            )
+            if not candidate:
                 continue
             payload = self.openai_text_service.extract_topic_suggestion(
                 title=candidate.get("title", ""),
@@ -352,16 +396,21 @@ class ApiService:
             suggestions.append(
                 {
                     "topic": str(payload.get("topic", "")).strip()[:90],
-                    "reason": str(payload.get("reason", "")).strip(),
+                    "reason": (
+                        f"{format_label} auf {platform} kam in den letzten 100 Uploads "
+                        f"{item['count_100']}x vor, in den letzten 20 aber nur {item['count_20']}x. "
+                        f"Die Vorlage machte {int(candidate.get('views') or 0):,} Views."
+                    ).replace(",", "."),
                     "last_used_at": self._to_optional_str(candidate.get("last_reused_at")),
                     "views": int(candidate.get("views") or 0),
                     "source_title": candidate.get("title", ""),
                     "source_url": candidate.get("url", ""),
                 }
             )
-            seen_format_combos.add(format_combo)
+            used_video_ids.add(candidate.get("video_id"))
             if len(suggestions) >= limit:
                 break
+
         return {"suggestions": suggestions}
 
     def polish_text(self, text: str) -> dict:
@@ -606,6 +655,76 @@ class ApiService:
         if hasattr(value, "isoformat"):
             return value.isoformat()
         return str(value)
+
+    def _infer_video_type_combo(self, video: dict) -> Optional[str]:
+        title = video.get("title", "") or ""
+        transcript_text = " ".join(
+            part for part in [title, video.get("description", "") or ""] if part
+        )
+        inferred = self.taxonomy_classifier.classify_video(
+            title=title,
+            transcript_text=transcript_text,
+            hook_text=title,
+        )
+        platform = self._first_non_fallback(inferred.get("platform_labels", []), "other_platform")
+        format_label = self._first_non_fallback(inferred.get("format_labels", []), "other_format")
+        if not platform or not format_label:
+            return None
+        return f"{platform}__{format_label}"
+
+    @staticmethod
+    def _find_topic_candidate(
+        references: list[dict],
+        platform: str,
+        format_label: str,
+        used_video_ids: set[str],
+        min_views: int = 50000,
+    ) -> Optional[dict]:
+        now = datetime.now(timezone.utc)
+        published_cutoff = now - timedelta(days=90)
+        reused_cutoff = now - timedelta(days=60)
+        candidates = [
+            reference for reference in references
+            if (
+                reference.get("video_id") not in used_video_ids
+                and int(reference.get("views") or 0) >= min_views
+                and platform in reference.get("platform_labels", [])
+                and format_label in reference.get("format_labels", [])
+                and ApiService._is_reference_old_enough(reference.get("published_at"), published_cutoff)
+                and ApiService._is_reference_reusable(reference.get("last_reused_at"), reused_cutoff)
+            )
+        ]
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda item: (
+                int(item.get("views") or 0),
+                item.get("published_at") or "",
+            ),
+            reverse=True,
+        )
+        return candidates[0]
+
+    @staticmethod
+    def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _is_reference_old_enough(published_at: Optional[str], cutoff: datetime) -> bool:
+        parsed = ApiService._parse_iso_datetime(published_at)
+        return bool(parsed and parsed <= cutoff)
+
+    @staticmethod
+    def _is_reference_reusable(last_reused_at: Optional[str], cutoff: datetime) -> bool:
+        if not last_reused_at:
+            return True
+        parsed = ApiService._parse_iso_datetime(last_reused_at)
+        return bool(parsed and parsed <= cutoff)
 
     def _save_generated_script(self, request: GenerationRequest, payload: dict, retrieval_results: list) -> Path:
         ensure_directory(self.paths.generated_scripts_dir)
