@@ -405,6 +405,9 @@ class ApiService:
                     "views": int(candidate.get("views") or 0),
                     "source_title": candidate.get("title", ""),
                     "source_url": candidate.get("url", ""),
+                    "source_id": candidate.get("video_id"),
+                    "transcript": candidate.get("transcript_text", "") or "",
+                    "script": None,
                 }
             )
             used_video_ids.add(candidate.get("video_id"))
